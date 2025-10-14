@@ -1,0 +1,4 @@
+.venv
+freshteams_resume/
+__pycache__/
+*.pyc
