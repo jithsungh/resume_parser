@@ -3,16 +3,16 @@ import json
 from pathlib import Path
 from typing import List, Dict, Any
 
-from flask import Flask, jsonify, send_file, abort, Response
+from flask import Flask, jsonify, send_file, abort, Response, request
 from openpyxl import load_workbook
 
 from src.PDF_pipeline.segment_sections import SECTIONS
 
 # Config
 # Default Excel file name as requested. Fallback to outputs/batch_sections.xlsx if missing.
-DEFAULT_XLSX = "batch_selection_4.xlsx"
-FALLBACK_XLSX = "outputs/batch_sections_4.xlsx"
-ALSO_TRY_XLSX = "batch_sections_4.xlsx"  # batch writer default name
+DEFAULT_XLSX = "batch_selection_5.xlsx"
+FALLBACK_XLSX = "outputs/batch_sections_5.xlsx"
+ALSO_TRY_XLSX = "batch_sections_5.xlsx"  # batch writer default name
 
 # Resolve project root (this file is in project root)
 ROOT_DIR = Path(__file__).resolve().parent
@@ -164,9 +164,29 @@ def create_app() -> Flask:
 
     @app.get("/api/rows")
     def api_rows():
-        # Return lightweight payload
+        # Return lightweight payload, with optional filtering for blank Experience
+        # Default behavior per request: load only records where Experience is empty/missing.
+        # Can override via query param ?experience_empty=0 to return all.
+        filter_default = os.getenv("FILTER_EXPERIENCE_EMPTY", "1").lower() in ("1", "true", "yes")
+        q = request.args.get("experience_empty")
+        only_empty = filter_default if q is None else q.lower() in ("1", "true", "yes")
+
+        def has_empty_experience(item: Dict[str, Any]) -> bool:
+            secs = item.get("sections", {}) or {}
+            exp_lines = secs.get("Experience")
+            # treat missing or empty list/string as empty
+            if exp_lines is None:
+                return True
+            if isinstance(exp_lines, str):
+                return len(exp_lines.strip()) == 0
+            if isinstance(exp_lines, list):
+                return len([ln for ln in exp_lines if str(ln).strip()]) == 0
+            return False
+
         payload = []
         for i, item in enumerate(items):
+            if only_empty and not has_empty_experience(item):
+                continue
             payload.append({
                 "i": i,
                 "pdf_path": item["pdf_path"],
