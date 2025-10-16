@@ -38,36 +38,47 @@ SECTIONS: Dict[str, List[str]] = {
         "technical expertise", "core competencies", "competencies", "areas of expertise",
         "professional skills", "hard skills", "soft skills", "language skills", "computer skills",
         "programming languages", "tools", "tools and technologies", "technologies", "tech stack",
-        "methodologies", "frameworks", "strengths", "capabilities", "technical proficiency"
+        "methodologies", "frameworks", "strengths", "capabilities", "technical proficiency", "core skills",
+        "skill set", "transferable skills", "technical skills & tools", "technical skills and tools",
+        "technical skills & expertise", "technical skills and expertise", "professional skills & expertise",
+        "professional skills and expertise", "it knowledge", "it skills", "it skills & expertise", "it skills and expertise",
+        "it skills & tools", "it skills and tools", "it competencies", "skills summary", "skills & expertise",
+        "skills and expertise"
     ],
     "Experience": [
-        "experience", "work experience", "work history", "professional experience",
+        "experience", "current organisation", "current organization", "previous organzations","previous organisations", "job title", "work experience", "work history", "professional experience",
         "employment history", "career history", "relevant experience", "industry experience",
         "internship experience", "practical experience", "volunteer experience",
         "freelance experience", "project experience", "consulting experience", "military experience",
-        "employment", "professional history"
+        "employment", "professional history", "employment details"
     ],
     "Projects": [
         "projects", "project", "relevant projects", "key projects", "selected projects",
         "major projects", "academic projects", "research projects", "open source projects",
         "client projects", "independent projects", "case studies", "portfolio projects",
         "course projects", "personal projects", "project work", "project experience",
-        "project details", "project summary", "notable projects", "significant projects"
+        "project details", "project summary", "notable projects", "significant projects",
+        "projects delivered", "projects completed", "projects handled"
     ],
     "Education": [
         "education", "educational qualifications", "academic background", "academics",
         "academic history", "training and education", "educational background",
         "college education", "schooling", "coursework", "academic achievements",
-        "research and education", "qualifications"
+        "research and education", "qualifications", "educational details", "educational history",
+        "education details", "education history", "educational qualifications", "educational profile",
+        "academic qualifications", "academic profile", "education qualifications", "education qualification"
     ],
     "Certifications": [
-        "certifications", "licenses", "courses", "training", "professional development",
+        "certifications", "certificates", "licenses", "courses", "training", "professional development",
         "workshops", "online courses", "continuing education", "special training",
-        "technical certifications", "certificates", "awards and certifications", "awards & certifications"
+        "technical certifications", "certificates", "awards and certifications", "awards & certifications",
+        "courses and certifications", "courses & certifications", "courses & certificates", "courses and certificates"
     ],
     "Achievements": [
         "achievements", "key achievements", "awards", "honors", "recognitions", "distinctions",
-        "milestones", "accomplishments", "notable achievements", "career highlights"
+        "milestones", "accomplishments", "notable achievements", "career highlights", "extracurricular activities",
+        "extracurricular & achievements", "extracurricular and achievements", "honors & achievements", "honors and achievements",
+        "honors & awards", "honors and awards"
     ],
     "Publications": [
         "publications", "research papers", "journal articles", "conference papers",
@@ -88,6 +99,10 @@ SECTIONS: Dict[str, List[str]] = {
         "hobbies", "interests", "personal interests", "extracurricular activities",
         "outside interests", "personal pursuits", "leisure activities"
     ],
+    "Additional Information": [
+        "additional information", "additional details", "other information", "miscellaneous",
+        "extra information", "further information", "more information"
+    ],
     "References": [
         "references", "referees"
     ],
@@ -101,20 +116,26 @@ SECTION_MAP: Dict[str, str] = {
     kw.lower(): canon for canon, kws in SECTIONS.items() for kw in kws
 }
 
-# Precompile regex for quick matching (word-boundary, optional trailing colon)
-SECTION_PATTERNS: List[Tuple[re.Pattern, str]] = []
-for canon, kws in SECTIONS.items():
-    for kw in kws:
-        # e.g., r'^\s*(?:relevant\s+projects|projects)\s*:?\s*$' (anchored, whole line, optional colon)
-        pat = re.compile(r'^\s*' + re.escape(kw) + r'\s*:?\s*$', flags=re.IGNORECASE)
-        SECTION_PATTERNS.append((pat, canon))
+# Precompute a map of keywords with separators removed (spaces, punctuation) to canonical.
+# This helps match stylized headings like "e x p e r i e n c e" or "E-X-P-E-R-I-E-N-C-E".
+CANON_NOSEP_MAP: Dict[str, str] = {
+    re.sub(r"[^a-z0-9]+", "", kw.lower()): canon
+    for canon, kws in SECTIONS.items()
+    for kw in kws
+}
+
 
 # Utility
 def clean_for_heading(text: str) -> str:
     t = text or ""
+    # Normalize common decorative separators
+    t = t.replace("•", " ").replace("·", " ").replace("|", " ")
+    t = t.replace("—", "-").replace("–", "-")
+    # Keep only a conservative set of characters for comparison
     t = re.sub(r'[^A-Za-z0-9\s:.-]', ' ', t)
     t = re.sub(r'\s+', ' ', t).strip()
     return t
+
 
 def uppercase_ratio(text: str) -> float:
     alphas = [c for c in text if c.isalpha()]
@@ -123,96 +144,227 @@ def uppercase_ratio(text: str) -> float:
     ups = [c for c in alphas if c.isupper()]
     return len(ups) / max(1, len(alphas))
 
+
+def _despaced(text: str) -> str:
+    """Remove all non-alphanumeric characters and lowercase."""
+    if not text:
+        return ""
+    return re.sub(r"[^a-z0-9]+", "", text.lower())
+
+
 def guess_section_name(text: str) -> Optional[str]:
+    """
+    Keyword matcher with stylized-heading support:
+    - Normalize whitespace and case; allow trailing colon.
+    - Exact match against SECTION_MAP.
+    - Fallback: match after removing separators (spaces, hyphens, bullets):
+      e x p e r i e n c e  -> experience
+      E-X-P-E-R-I-E-N-C-E -> experience
+    """
     if not text:
         return None
-    s = clean_for_heading(text).lower()
-    # Exact pattern (line == keyword or keyword + colon)
-    for pat, canon in SECTION_PATTERNS:
-        if pat.match(s):
-            return canon
-    # Soft match: startswith or contains keyword at boundaries (short lines only)
-    tokens = s.split()
-    if len(tokens) <= 6:
-        joined = ' '.join(tokens)
-        for kw, canon in SECTION_MAP.items():
-            if kw == joined:
-                return canon
-            if joined.startswith(kw + " ") or joined.endswith(" " + kw):
-                return canon
-    return None
+
+    s = clean_for_heading(text)
+    if not s:
+        return None
+
+    s = s.strip()
+    # Allow a trailing colon
+    if s.endswith(':'):
+        s0 = s[:-1].strip()
+    else:
+        s0 = s
+
+    s_norm = re.sub(r"\s+", " ", s0).lower()
+    if s_norm in SECTION_MAP:
+        return SECTION_MAP[s_norm]
+
+    # Fallback matching after removing separators
+    s_nosep = _despaced(s0)
+    return CANON_NOSEP_MAP.get(s_nosep)
+
 
 def is_heading_line(line: Dict[str, Any], col_width: float, prev_line: Optional[Dict[str, Any]] = None) -> Tuple[bool, Optional[str], float]:
     """
-    Decide if a line is a section heading using metrics to avoid false positives.
-    Requires BOTH: strong metrics score and lexical signal (canonical keyword or trailing colon).
-    Returns (is_heading, section_name, score).
+    Heading detection with stylized keyword matching.
+    Consider a line a heading only if, after normalization (including de-spacing),
+    it matches a known keyword/variant. Token/length constraints are not enforced
+    here to allow spaced-letter headings; outlier filtering is handled later.
     """
     text = (line.get('text') or "").strip()
     if not text:
         return (False, None, 0.0)
 
-    props = line.get('properties', {}) or {}
-    mets = line.get('metrics', {}) or {}
-    bounds = line.get('boundaries', {}) or {}
+    s = clean_for_heading(text).strip()
+    # Remove optional trailing colon for comparison
+    s_comp = s[:-1].strip() if s.endswith(':') else s
+    if not s_comp:
+        return (False, None, 0.0)
 
-    wc = props.get('word_count') or 0
-    cc = props.get('char_count') or len(text)
-    fs = mets.get('avg_font_size') or (bounds.get('height') or 0)
-    sa = mets.get('space_above') or 0
-    lw = mets.get('line_width') or (bounds.get('width') or 0)
+    canon = guess_section_name(s_comp)
+    if canon is None:
+        return (False, None, 0.0)
 
-    s_text = clean_for_heading(text)
-    ends_colon = s_text.endswith(':')
-    ends_punct = s_text.endswith('.') or s_text.endswith(';') or s_text.endswith(',')
-    up_ratio = uppercase_ratio(s_text)
+    # Match achieved via exact or stylized normalization
+    return (True, canon, 1.0)
 
-    canon = guess_section_name(s_text)
 
-    # Scoring (scale-invariant, minimal absolute thresholds)
-    score = 0.0
-    if canon:
-        score += 3.0                       # strong lexical match
-    if ends_colon:
-        score += 1.0                       # headings often end with colon
-    if up_ratio >= 0.6 or s_text.istitle():
-        score += 1.0                       # heading-like casing
-    if wc <= 6 and cc <= 48:
-        score += 1.0                       # short line
-    if fs and sa >= 0.6 * fs:
-        score += 1.0                       # spacing above suggests a block break
+# ----------------- Enhanced segmentation with candidate analysis -----------------
 
-    # Negative evidences
-    if ends_punct:
-        score -= 2.0                       # sentence, not heading
-    if col_width and lw > 0.85 * col_width and wc > 6:
-        score -= 2.0                       # paragraph-like
-    # Avoid false positive: single wrapped word like "Experience" at end of paragraph
-    if wc == 1 and not ends_colon and fs and sa < 0.4 * fs:
-        score -= 3.0
+def _reading_key(col: Dict[str, Any], line: Dict[str, Any]) -> Tuple[int, float, float]:
+    page_no = int(col.get('page', 0))
+    x_start = float(col.get('x_start', col.get('column_index', 0)))
+    top = float(line.get('boundaries', {}).get('top', 0.0))
+    return (page_no, x_start, top)
 
-    # If previous line exists and there's no real gap, demote unless explicit colon/exact match
-    if prev_line is not None and not ends_colon and not canon:
-        prev_m = prev_line.get('metrics', {}) or {}
-        gap = mets.get('space_above') or 0
-        pfs = prev_m.get('avg_font_size') or fs or 0
-        if pfs and gap < 0.3 * pfs:
-            score -= 1.5
 
-    # Final decision: require BOTH metrics (score) and lexical/colon signal
-    is_heading = (score >= 3.0) and (canon is not None or ends_colon)
-    return (is_heading, canon, score)
+def _median(values: List[float]) -> float:
+    if not values:
+        return 0.0
+    vs = sorted(v for v in values if isinstance(v, (int, float)))
+    if not vs:
+        return 0.0
+    n = len(vs)
+    mid = n // 2
+    return float(vs[mid] if n % 2 == 1 else (vs[mid - 1] + vs[mid]) / 2.0)
+
+
+def _safe(val: Any, default: float = 0.0) -> float:
+    try:
+        return float(val)
+    except Exception:
+        return default
+
+
+def _collect_candidates(columns_with_lines: List[Dict[str, Any]]):
+    """Return list of (pos_key, cand_dict)."""
+    cands = []
+    for col in sorted(columns_with_lines, key=lambda c: (c.get('page', 0), c.get('x_start', c.get('column_index', 0)))):
+        col_width = float(col.get('width') or (col.get('x_end', 0) - col.get('x_start', 0)) or 0)
+        page_no = int(col.get('page', 0))
+        col_idx = int(col.get('column_index', 0))
+        for li, line in enumerate(sorted(col.get('lines', []), key=lambda l: l.get('boundaries', {}).get('top', 0))):
+            ok, canon, _ = is_heading_line(line, col_width, prev_line=None)
+            if not ok:
+                continue
+            text = line.get('text', '') or ''
+            m = dict(line.get('metrics', {}))
+            b = dict(line.get('boundaries', {}))
+            width_ratio = (_safe(m.get('line_width', b.get('width', 0))) / max(1.0, col_width))
+            cand = {
+                'page': page_no,
+                'column_index': col_idx,
+                'line_index': int(line.get('line_index', li)),
+                'text': text,
+                'canon': canon,
+                'metrics': m,
+                'boundaries': b,
+                'width_ratio': width_ratio,
+                'uppercase_ratio': uppercase_ratio(text),
+                'col_width': col_width,
+                'line_ref': line,
+            }
+            cands.append((_reading_key(col, line), cand))
+    return cands
+
+
+def _filter_candidates(cands: List[Tuple[Tuple[int, float, float], Dict[str, Any]]]) -> List[Tuple[Tuple[int, float, float], Dict[str, Any]]]:
+    if not cands:
+        return cands
+    # Compute medians across candidates
+    fonts = [_safe(c[1]['metrics'].get('avg_font_size')) for c in cands]
+    spaces = [_safe(c[1]['metrics'].get('space_above')) for c in cands]
+    widths = [_safe(c[1]['width_ratio']) for c in cands]
+    uppers = [_safe(c[1]['uppercase_ratio']) for c in cands]
+
+    med_font = _median(fonts) or 0.0
+    med_space = _median(spaces) or 0.0
+    med_width = _median(widths) or 0.0
+    med_upper = _median(uppers) or 0.0
+
+    kept = []
+    for key, cand in cands:
+        f = _safe(cand['metrics'].get('avg_font_size'))
+        sa = _safe(cand['metrics'].get('space_above'))
+        wr = _safe(cand.get('width_ratio'))
+        ur = _safe(cand.get('uppercase_ratio'))
+        wc = int(cand['line_ref'].get('properties', {}).get('word_count', 0))
+
+        # Reject if simultaneously too small font, cramped, low uppercase, and looks like a sentence
+        small_font = (med_font > 0 and f < 0.7 * med_font)
+        cramped = (sa < max(4.0, 0.5 * med_space))
+        low_upper = (ur < max(0.6, 0.7 * med_upper))
+        long_words = (wc > 6 and wr > 0.9)
+
+        if small_font and cramped and low_upper and long_words:
+            # likely a false positive
+            continue
+        kept.append((key, cand))
+
+    # If everything got filtered (over-aggressive), fall back to original candidates
+    return kept if kept else cands
+
+
+def _is_unknown_heading(line: Dict[str, Any], col_stats: Dict[str, float]) -> bool:
+    """Heuristic to catch probable headings that didn't match any known keyword."""
+    text = (line.get('text') or '').strip()
+    if not text:
+        return False
+    s = clean_for_heading(text)
+    tokens = [t for t in s.split() if t]
+    if len(tokens) == 0 or len(tokens) > 7 or len(s) > 48:
+        return False
+
+    m = dict(line.get('metrics', {}))
+    ur = uppercase_ratio(text)
+    fs = _safe(m.get('avg_font_size'))
+    sa = _safe(m.get('space_above'))
+
+    col_font_med = col_stats.get('font_median', 0.0)
+    col_space_med = col_stats.get('space_median', 0.0)
+
+    # Heading-like if font noticeably larger or uppercase and has some space above or ends with ':'
+    if (fs >= 1.15 * max(1.0, col_font_med) or ur >= 0.8 or s.endswith(':')) and (sa >= max(2.0, 1.0 * col_space_med)):
+        # Also avoid numeric-only, e.g., dates
+        if re.search(r"[A-Za-z]", s):
+            # Don't treat as unknown if it actually matches a known section after normalization
+            return guess_section_name(s) is None
+    return False
 
 
 def segment_sections_from_columns(columns_with_lines: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    Segment columns-with-lines into sections. Processes columns per page in reading order.
+    Segment columns-with-lines into sections. Two-pass approach:
+    1) Collect all heading candidates (with stylized matching) and filter outliers using metrics.
+    2) Iterate in reading order creating sections at accepted headings; collect probable unknown headings.
     Returns a full JSON containing sections with full line documents. Also prints a simplified JSON.
     """
     if not columns_with_lines:
         result = {"meta": {"pages": 0, "columns": 0, "sections": 0}, "sections": []}
         print(json.dumps([{"section": "Unknown", "lines": []}], ensure_ascii=False, indent=2))
         return result
+
+    # First pass: candidates
+    cands = _collect_candidates(columns_with_lines)
+    cands = _filter_candidates(cands)
+    accepted_positions: Dict[Tuple[int, int, int], str] = {}
+    for _, c in cands:
+        key = (c['page'], c['column_index'], c['line_index'])
+        accepted_positions[key] = c['canon']
+
+    # Precompute per-column stats
+    col_stats_map: Dict[Tuple[int, int], Dict[str, float]] = {}
+    for col in columns_with_lines:
+        page_no = int(col.get('page', 0))
+        col_idx = int(col.get('column_index', 0))
+        lines = col.get('lines', [])
+        fonts = [_safe(l.get('metrics', {}).get('avg_font_size')) for l in lines]
+        spaces = [_safe(l.get('metrics', {}).get('space_above')) for l in lines]
+        col_stats_map[(page_no, col_idx)] = {
+            'font_median': _median(fonts),
+            'space_median': _median(spaces),
+            'width': float(col.get('width') or (col.get('x_end', 0) - col.get('x_start', 0)) or 0)
+        }
 
     # Reading order: by page, then by x_start (or column_index), then by line top
     cols_sorted = sorted(
@@ -221,22 +373,42 @@ def segment_sections_from_columns(columns_with_lines: List[Dict[str, Any]]) -> D
     )
 
     sections: List[Dict[str, Any]] = []
-    # Default bucket until first heading
     current_section = {
         "section": "Contact Information",
-        "lines": []  # full line docs
+        "lines": []
     }
-
-    prev_line_ctx: Optional[Tuple[int, int, Dict[str, Any]]] = None  # (page, col_idx, line)
+    unknown_headings: List[Dict[str, Any]] = []
 
     for col in cols_sorted:
-        col_width = float(col.get('width') or (col.get('x_end', 0) - col.get('x_start', 0)) or 0)
         page_no = int(col.get('page', 0))
         col_idx = int(col.get('column_index', 0))
+        col_width = float(col.get('width') or (col.get('x_end', 0) - col.get('x_start', 0)) or 0)
         lines = sorted(col.get('lines', []), key=lambda l: l.get('boundaries', {}).get('top', 0))
+        stats = col_stats_map.get((page_no, col_idx), {})
 
         for li, line in enumerate(lines):
-            # Attach page/column to line for downstream consumers
+            key = (page_no, col_idx, int(line.get('line_index', li)))
+            if key in accepted_positions:
+                if current_section["lines"]:
+                    sections.append(current_section)
+                sec_name = accepted_positions[key] or "Section"
+                current_section = {"section": sec_name, "lines": []}
+                # Skip adding the heading line itself
+                continue
+
+            # Not a recognized heading: record probable unknown headings separately
+            if _is_unknown_heading(line, stats):
+                unknown_headings.append({
+                    "page": page_no,
+                    "column_index": col_idx,
+                    "line_index": int(line.get('line_index', li)),
+                    "text": line.get('text', '') or '',
+                    "boundaries": dict(line.get('boundaries', {})),
+                    "properties": dict(line.get('properties', {})),
+                    "metrics": dict(line.get('metrics', {})),
+                })
+
+            # Regular content line
             line_out = {
                 "page": page_no,
                 "column_index": col_idx,
@@ -246,29 +418,8 @@ def segment_sections_from_columns(columns_with_lines: List[Dict[str, Any]]) -> D
                 "properties": dict(line.get('properties', {})),
                 "metrics": dict(line.get('metrics', {}))
             }
+            current_section["lines"].append(line_out)
 
-            # Determine previous line in same page+column (for tighter FP control)
-            prev_line = None
-            if prev_line_ctx and prev_line_ctx[0] == page_no and prev_line_ctx[1] == col_idx:
-                prev_line = prev_line_ctx[2]
-
-            is_head, canon_name, _score = is_heading_line(line, col_width, prev_line=prev_line)
-
-            if is_head:
-                # Save current section if it has content
-                if current_section["lines"]:
-                    sections.append(current_section)
-                # Start new section with canonical name if known
-                sec_name = canon_name or clean_for_heading(line_out["text"]).rstrip(':').strip().title() or "Section"
-                current_section = {"section": sec_name, "lines": []}
-                # Do not include the heading line itself as content
-            else:
-                current_section["lines"].append(line_out)
-
-            # Update previous line context for same page/column
-            prev_line_ctx = (page_no, col_idx, line)
-
-    # Flush last section
     if current_section["lines"]:
         sections.append(current_section)
 
@@ -277,7 +428,6 @@ def segment_sections_from_columns(columns_with_lines: List[Dict[str, Any]]) -> D
     seen: Dict[str, Dict[str, Any]] = {}
     for sec in sections:
         name = sec["section"]
-        # Normalize name to canonical where possible
         canon = guess_section_name(name) or name
         name_key = canon
         if name_key in seen:
@@ -286,6 +436,24 @@ def segment_sections_from_columns(columns_with_lines: List[Dict[str, Any]]) -> D
             new_sec = {"section": name_key, "lines": list(sec["lines"])}
             seen[name_key] = new_sec
             merged.append(new_sec)
+
+    # If we found probable unknown headings, add them as a dedicated section at the end
+    if unknown_headings:
+        merged.append({
+            "section": "Unknown Sections",
+            "lines": [
+                {
+                    "page": uh["page"],
+                    "column_index": uh["column_index"],
+                    "line_index": uh["line_index"],
+                    "text": uh["text"],
+                    "boundaries": uh.get("boundaries", {}),
+                    "properties": uh.get("properties", {}),
+                    "metrics": uh.get("metrics", {}),
+                }
+                for uh in unknown_headings
+            ]
+        })
 
     # Build meta
     all_pages = sorted(set(c.get('page', 0) for c in cols_sorted))
@@ -296,6 +464,7 @@ def segment_sections_from_columns(columns_with_lines: List[Dict[str, Any]]) -> D
             "columns": len(cols_sorted),
             "sections": len(merged),
             "lines_total": sum(len(sec["lines"]) for sec in merged),
+            "unknown_headings_count": len(unknown_headings)
         },
         "sections": merged
     }
@@ -318,7 +487,7 @@ def simple_json(data: Dict[str, Any]) -> str:
     Convert full JSON to simplified JSON with just section names and line texts.
     """
     if not data or 'sections' not in data:
-        return json.dumps([{"section": "Unknown", "lines": []}], ensure_ascii=False, indent=2)
+        return json.dumps([{ "section": "Unknown", "lines": [] }], ensure_ascii=False, indent=2)
     printable = [
         {
             "section": sec.get("section", "Unknown"),
@@ -353,7 +522,7 @@ def main():
     from src.PDF_pipeline.split_columns import split_columns
     from src.PDF_pipeline.get_lines import get_column_wise_lines
 
-    PDF_PATH = "freshteams_resume/ReactJs/UI_Developer.pdf"
+    PDF_PATH = "freshteams_resume/ReactJs/Prajkta_Trainee_salesforce_developer_resume.pdf"
     MIN_WORDS = 10
     DYNAMIC_MIN_WORDS = True
     Y_TOL = 1.0
@@ -379,5 +548,5 @@ def main():
     print(simple_json(data))
 
 
-if __name__ == "__main__":
-    main()
+# if __name__ == "__main__":
+#     main()

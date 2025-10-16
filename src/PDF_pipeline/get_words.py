@@ -100,5 +100,6 @@ def main():
     #     print(f"Single page (page 1) words: {len(single_page_words)}")
     # except ValueError as e:
     #     print(f"Error: {e}")
-if __name__ == "__main__":
-    main()
+    
+# if __name__ == "__main__":
+#     main()

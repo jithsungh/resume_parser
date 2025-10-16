@@ -269,5 +269,5 @@ def main():
         pages_list = [col.get('page', 'Unknown') for col in gc['columns']]
         print(f"  Pages: {pages_list}")
 
-if __name__ == "__main__":
-    main()
+# if __name__ == "__main__":
+#     main()

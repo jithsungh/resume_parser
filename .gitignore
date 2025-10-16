@@ -2,3 +2,5 @@
 freshteams_resume/
 __pycache__/
 *.pyc
+
+outputs/

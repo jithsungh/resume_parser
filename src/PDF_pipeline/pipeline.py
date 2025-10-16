@@ -1,361 +1,241 @@
 import re
 import json
-from typing import List, Dict, Any, Tuple, Optional
+from typing import Dict, Any, Tuple, List, Optional
 
-# Input to this module:
-# - columns_with_lines: output of get_lines.get_column_wise_lines(...)
-#   Each column dict contains:
-#     {
-#       'page': int,
-#       'column_index': int,
-#       'x_start': int/float, 'x_end': int/float, 'width': int/float,
-#       'words': [...],
-#       'lines': [
-#           {
-#               'line_index': int,
-#               'text': str,
-#               'boundaries': { x0, x1, top, bottom, width, height },
-#               'properties': { char_count, word_count, char_count_no_spaces },
-#               'metrics': { height, space_above, space_below, char_count, word_count, avg_font_size, line_width }
-#           }, ...
-#       ]
-#     }
+from src.PDF_pipeline.get_words import get_words_from_pdf
+from src.PDF_pipeline.split_columns import split_columns
+from src.PDF_pipeline.get_lines import get_column_wise_lines
+from src.PDF_pipeline.segment_sections import (
+    segment_sections_from_columns,
+    simple_json,
+    pretty_print_segmented_sections,
+)
 
-# Expanded section vocabulary (canonical -> variants)
-SECTIONS: Dict[str, List[str]] = {
-    "Contact Information": [
-        "contact", "contact information", "contact details", "personal details",
-        "basic information", "contact info", "bio"
-    ],
-    "Summary": [
-        "summary", "professional summary", "career summary", "profile", "about me",
-        "executive summary", "personal profile", "introduction", "career objective",
-        "objective", "professional profile", "career overview", "personal statement",
-        "highlights", "overview"
-    ],
-    "Skills": [
-        "skills", "key skills", "technical skills", "non technical skills", "nontechnical skills",
-        "technical expertise", "core competencies", "competencies", "areas of expertise",
-        "professional skills", "hard skills", "soft skills", "language skills", "computer skills",
-        "programming languages", "tools", "tools and technologies", "technologies", "tech stack",
-        "methodologies", "frameworks", "strengths", "capabilities", "technical proficiency"
-    ],
-    "Experience": [
-        "experience", "work experience", "work history", "professional experience",
-        "employment history", "career history", "relevant experience", "industry experience",
-        "internship experience", "practical experience", "volunteer experience",
-        "freelance experience", "project experience", "consulting experience", "military experience"
-    ],
-    "Projects": [
-        "projects", "project", "relevant projects", "key projects", "selected projects",
-        "major projects", "academic projects", "research projects", "open source projects",
-        "client projects", "independent projects", "case studies", "portfolio projects",
-        "course projects", "personal projects", "project work", "project experience",
-        "project details", "project summary", "notable projects", "significant projects"
-    ],
-    "Education": [
-        "education", "educational qualifications", "academic background", "academics",
-        "academic history", "training and education", "educational background",
-        "college education", "schooling", "coursework", "academic achievements",
-        "research and education", "qualifications"
-    ],
-    "Certifications": [
-        "certifications", "licenses", "courses", "training", "professional development",
-        "workshops", "online courses", "continuing education", "special training",
-        "technical certifications", "certificates", "awards and certifications", "awards & certifications"
-    ],
-    "Achievements": [
-        "achievements", "key achievements", "awards", "honors", "recognitions", "distinctions",
-        "milestones", "accomplishments", "notable achievements", "career highlights"
-    ],
-    "Publications": [
-        "publications", "research papers", "journal articles", "conference papers",
-        "books", "book chapters", "academic publications", "white papers", "preprints"
-    ],
-    "Research": [
-        "research", "research experience", "research work", "research summary",
-        "thesis", "dissertation", "research interests"
-    ],
-    "Languages": [
-        "languages", "language proficiency", "spoken languages", "language skills"
-    ],
-    "Volunteer": [
-        "volunteer", "volunteering", "community involvement", "social work",
-        "philanthropy", "community service", "volunteer activities"
-    ],
-    "Hobbies": [
-        "hobbies", "interests", "personal interests", "extracurricular activities",
-        "outside interests", "personal pursuits", "leisure activities"
-    ],
-    "References": [
-        "references", "referees"
-    ],
-    "Declarations": [
-        "declaration", "declarations", "disclaimer", "self declaration"
-    ]
-}
+# ------------ Contact info extraction (regex-based) ------------
 
-# Map each keyword (lower) to canonical section
-SECTION_MAP: Dict[str, str] = {
-    kw.lower(): canon for canon, kws in SECTIONS.items() for kw in kws
-}
+EMAIL_RE = re.compile(r'[\w\.-]+@[\w\.-]+\.\w{2,}', re.IGNORECASE)
+# Broad international phone pattern; avoids too-short matches
+PHONE_RE = re.compile(
+    r'(?:\+|00)?\d{1,3}[\s\-\.]?(?:\(?\d{2,5}\)?[\s\-\.]?)?\d{3,5}[\s\-\.]?\d{3,5}',
+    re.IGNORECASE,
+)
+LINKEDIN_RE = re.compile(r'(?:https?://)?(?:www\.)?linkedin\.com/[^\s,;]+', re.IGNORECASE)
+GITHUB_RE = re.compile(r'(?:https?://)?(?:www\.)?github\.com/[^\s,;]+', re.IGNORECASE)
 
-# Precompile regex for quick matching (word-boundary, optional trailing colon)
-SECTION_PATTERNS: List[Tuple[re.Pattern, str]] = []
-for canon, kws in SECTIONS.items():
-    for kw in kws:
-        # e.g., r'^\s*(?:relevant\s+projects|projects)\s*:?\s*$' (anchored, whole line, optional colon)
-        pat = re.compile(r'^\s*' + re.escape(kw) + r'\s*:?\s*$', flags=re.IGNORECASE)
-        SECTION_PATTERNS.append((pat, canon))
+# Location: "City, State" or "City, Country" or with PIN/ZIP at end
+LOCATION_CANDIDATE_RE = re.compile(
+    r'\b([A-Z][A-Za-z .\-]+,\s*[A-Z][A-Za-z .\-]+(?:,\s*[A-Z][A-Za-z .\-]+)?)\b(?:\s*\d{5}(?:-\d{4})?|\s*\d{6})?',
+    re.IGNORECASE,
+)
 
-# Utility
-def clean_for_heading(text: str) -> str:
-    t = text or ""
-    t = re.sub(r'[^A-Za-z0-9\s:]', ' ', t)
-    t = re.sub(r'\s+', ' ', t).strip()
-    return t
+# Name heuristic (regex-and-heuristic): 1-4 Title-Case tokens, no digits, no email/url
+NAME_LINE_RE = re.compile(r"^[A-Z][a-zA-Z'\-]+(?: [A-Z][a-zA-Z'\-]+){0,3}$")
 
-def uppercase_ratio(text: str) -> float:
-    alphas = [c for c in text if c.isalpha()]
-    if not alphas:
-        return 0.0
-    ups = [c for c in alphas if c.isupper()]
-    return len(ups) / max(1, len(alphas))
 
-def guess_section_name(text: str) -> Optional[str]:
-    if not text:
-        return None
-    s = clean_for_heading(text).lower()
-    # Exact pattern (line == keyword or keyword + colon)
-    for pat, canon in SECTION_PATTERNS:
-        if pat.match(s):
-            return canon
-    # Soft match: startswith or contains keyword at boundaries (short lines only)
-    tokens = s.split()
-    if len(tokens) <= 6:
-        joined = ' '.join(tokens)
-        for kw, canon in SECTION_MAP.items():
-            if kw == joined:
-                return canon
-            if joined.startswith(kw + " ") or joined.endswith(" " + kw):
-                return canon
-    return None
+def _collect_all_lines(columns_with_lines: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    lines: List[Dict[str, Any]] = []
+    for col in columns_with_lines or []:
+        for ln in col.get("lines", []) or []:
+            page = ln.get("page", col.get("page", 0))
+            top = (ln.get("boundaries", {}) or {}).get("top", 0)
+            lines.append({
+                "page": page,
+                "column_index": col.get("column_index", 0),
+                "text": ln.get("text", "") or "",
+                "boundaries": dict(ln.get("boundaries", {})),
+                "properties": dict(ln.get("properties", {})),
+                "metrics": dict(ln.get("metrics", {})),
+                "line_index": ln.get("line_index", 0),
+                "_top": top,
+            })
+    # Reading order: first by page then by top
+    lines.sort(key=lambda l: (l["page"], l.get("_top", 0)))
+    return lines
 
-def is_heading_line(line: Dict[str, Any], col_width: float, prev_line: Optional[Dict[str, Any]] = None) -> Tuple[bool, Optional[str], float]:
+
+def _extract_first_match(regex: re.Pattern, text: str) -> Optional[str]:
+    m = regex.search(text or "")
+    return m.group(0) if m else None
+
+
+def _normalize_phone(ph: str) -> str:
+    if not ph:
+        return ph
+    s = ph.strip()
+    # Collapse multiple spaces/dots/hyphens
+    s = re.sub(r'[^\d\+]+', ' ', s)
+    s = re.sub(r'\s+', ' ', s).strip()
+    return s
+
+
+def extract_contact_info_from_lines(columns_with_lines: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    Decide if a line is a section heading using metrics to avoid false positives.
-    Returns (is_heading, section_name, score).
+    Regex-based extraction of contact fields from lines.
+    Priority: early lines on first page, then fallback to whole text.
     """
-    text = (line.get('text') or "").strip()
-    if not text:
-        return (False, None, 0.0)
+    info: Dict[str, Any] = {}
+    all_lines = _collect_all_lines(columns_with_lines)
+    if not all_lines:
+        return info
 
-    props = line.get('properties', {}) or {}
-    mets = line.get('metrics', {}) or {}
-    bounds = line.get('boundaries', {}) or {}
+    # Focus on top of first page
+    first_page = min(l["page"] for l in all_lines)
+    first_page_lines = [l for l in all_lines if l["page"] == first_page]
+    first_page_lines.sort(key=lambda l: l.get("_top", 0))
+    head_window = first_page_lines[:40]  # top 40 lines
 
-    wc = props.get('word_count') or 0
-    cc = props.get('char_count') or len(text)
-    fs = mets.get('avg_font_size') or (bounds.get('height') or 0)
-    sa = mets.get('space_above') or 0
-    lw = mets.get('line_width') or (bounds.get('width') or 0)
+    # Scan head window for contact fields
+    for ln in head_window:
+        txt = ln.get("text", "") or ""
+        if "email" not in info:
+            em = _extract_first_match(EMAIL_RE, txt)
+            if em:
+                info["email"] = em
+        if "linkedin" not in info:
+            li = _extract_first_match(LINKEDIN_RE, txt)
+            if li:
+                info["linkedin"] = li
+        if "github" not in info:
+            gh = _extract_first_match(GITHUB_RE, txt)
+            if gh:
+                info["github"] = gh
+        if "phone" not in info:
+            ph = _extract_first_match(PHONE_RE, txt)
+            # Avoid matching a short number or year-like values
+            if ph and len(re.sub(r'\D', '', ph)) >= 8:
+                info["phone"] = _normalize_phone(ph)
+        if "location" not in info:
+            loc = _extract_first_match(LOCATION_CANDIDATE_RE, txt)
+            if loc and not any(k in txt.lower() for k in ("summary", "experience", "education", "skills", "projects")):
+                info["location"] = loc.strip()
 
-    s_text = clean_for_heading(text)
-    ends_colon = s_text.endswith(':')
-    ends_punct = s_text.endswith('.') or s_text.endswith(';') or s_text.endswith(',')
-    up_ratio = uppercase_ratio(s_text)
+    # Name heuristic from very top lines (exclude lines containing obvious contact artifacts)
+    if "name" not in info:
+        for ln in first_page_lines[:15]:
+            t = (ln.get("text") or "").strip()
+            if not t or any(x in t.lower() for x in ("@", "linkedin.com", "github.com", "www.", "http")):
+                continue
+            if any(ch.isdigit() for ch in t):
+                continue
+            if NAME_LINE_RE.match(t) and 1 <= len(t.split()) <= 4:
+                info["name"] = t
+                break
 
-    canon = guess_section_name(s_text)
+    # Fallback: scan entire text for any missing fields
+    all_text = " ".join(l.get("text", "") or "" for l in all_lines)
+    if "email" not in info:
+        em = _extract_first_match(EMAIL_RE, all_text)
+        if em:
+            info["email"] = em
+    if "linkedin" not in info:
+        li = _extract_first_match(LINKEDIN_RE, all_text)
+        if li:
+            info["linkedin"] = li
+    if "github" not in info:
+        gh = _extract_first_match(GITHUB_RE, all_text)
+        if gh:
+            info["github"] = gh
+    if "phone" not in info:
+        ph = _extract_first_match(PHONE_RE, all_text)
+        if ph and len(re.sub(r'\D', '', ph)) >= 8:
+            info["phone"] = _normalize_phone(ph)
+    if "location" not in info:
+        loc = _extract_first_match(LOCATION_CANDIDATE_RE, all_text)
+        if loc:
+            info["location"] = loc.strip()
 
-    # Scoring (scale-invariant, minimal absolute thresholds)
-    score = 0.0
-    if canon:
-        score += 3.0                       # strong lexical match
-    if ends_colon:
-        score += 1.0                       # headings often end with colon
-    if up_ratio >= 0.6 or s_text.istitle():
-        score += 1.0                       # heading-like casing
-    if wc <= 6 and cc <= 48:
-        score += 1.0                       # short line
-    if fs and sa >= 0.6 * fs:
-        score += 1.0                       # spacing above suggests a block break
+    return info
 
-    # Negative evidences
-    if ends_punct:
-        score -= 2.0                       # sentence, not heading
-    if col_width and lw > 0.85 * col_width and wc > 6:
-        score -= 2.0                       # paragraph-like
-    # Avoid false positive: single wrapped word like "Experience" at end of paragraph
-    if wc == 1 and not ends_colon and fs and sa < 0.4 * fs:
-        score -= 3.0
 
-    # If previous line exists and there's no real gap, demote unless explicit colon/exact match
-    if prev_line is not None and not ends_colon and not canon:
-        prev_m = prev_line.get('metrics', {}) or {}
-        gap = mets.get('space_above') or 0
-        pfs = prev_m.get('avg_font_size') or fs or 0
-        if pfs and gap < 0.3 * pfs:
-            score -= 1.5
+# -------------------- Pipeline --------------------
 
-    # Final decision
-    is_heading = score >= 3.0 and (canon is not None or ends_colon or up_ratio >= 0.6)
-    return (is_heading, canon, score)
-
-def segment_sections_from_columns(columns_with_lines: List[Dict[str, Any]]) -> Dict[str, Any]:
+def run_pipeline(
+    pdf_path: str,
+    *,
+    min_words_per_column: int = 10,
+    dynamic_min_words: bool = True,
+    y_tolerance: float = 1.0,
+    verbose: bool = True,
+) -> Tuple[Dict[str, Any], str]:
     """
-    Segment columns-with-lines into sections. Processes columns per page in reading order.
-    Returns a full JSON containing sections with full line documents. Also prints a simplified JSON.
+    Run the resume parsing pipeline:
+      PDF -> words -> columns -> column-wise lines -> section segmentation -> contact info -> simple_json.
+    Returns (full_result_json, simplified_json_str). Prints simplified JSON fully.
     """
-    if not columns_with_lines:
-        result = {"meta": {"pages": 0, "columns": 0, "sections": 0}, "sections": []}
-        print(json.dumps([{"section": "Unknown", "lines": []}], ensure_ascii=False, indent=2))
-        return result
+    if verbose:
+        print(f"PDF: {pdf_path}")
 
-    # Reading order: by page, then by x_start (or column_index), then by line top
-    cols_sorted = sorted(
-        columns_with_lines,
-        key=lambda c: (c.get('page', 0), c.get('x_start', c.get('column_index', 0)))
+    # 1) Words
+    pages = get_words_from_pdf(pdf_path)
+    if not pages:
+        print("No pages extracted.")
+        empty = {"meta": {"pages": 0, "columns": 0, "sections": 0, "lines_total": 0}, "sections": [], "contact": {}}
+        sim = simple_json(empty)
+        print(sim)
+        return empty, sim
+
+    if verbose:
+        total_words = sum(len(p.get("words", [])) for p in pages)
+        print(f"Pages: {len(pages)} | Total words: {total_words}")
+
+    # 2) Columns
+    columns = split_columns(
+        pages,
+        min_words_per_column=min_words_per_column,
+        dynamic_min_words=dynamic_min_words,
     )
+    if verbose:
+        print(f"Columns: {len(columns)}")
 
-    sections: List[Dict[str, Any]] = []
-    # Default bucket until first heading
-    current_section = {
-        "section": "Contact Information",
-        "lines": []  # full line docs
-    }
+    # 3) Lines with tight vertical overlap and metrics
+    columns_with_lines = get_column_wise_lines(columns, y_tolerance=y_tolerance)
+    if verbose:
+        line_count = sum(len(c.get("lines", [])) for c in columns_with_lines)
+        print(f"Total lines: {line_count}")
 
-    page_col_key = lambda col: (col.get('page', 0), col.get('column_index', 0))
+    # 4) Sections (prints simplified JSON internally as well)
+    result = segment_sections_from_columns(columns_with_lines)
 
-    prev_line_ctx: Optional[Tuple[int, int, Dict[str, Any]]] = None  # (page, col_idx, line)
+    # 5) Contact info (regex-based)
+    contact = extract_contact_info_from_lines(columns_with_lines)
+    result["contact"] = contact
 
-    for col in cols_sorted:
-        col_width = float(col.get('width') or (col.get('x_end', 0) - col.get('x_start', 0)) or 0)
-        page_no = int(col.get('page', 0))
-        col_idx = int(col.get('column_index', 0))
-        lines = sorted(col.get('lines', []), key=lambda l: l.get('boundaries', {}).get('top', 0))
+    # 6) Simplified JSON (print fully for the caller too)
+    sim = simple_json(result)
+    print(sim)
 
-        for li, line in enumerate(lines):
-            # Attach page/column to line for downstream consumers
-            line_out = {
-                "page": page_no,
-                "column_index": col_idx,
-                "line_index": int(line.get('line_index', li)),
-                "text": line.get('text', "") or "",
-                "boundaries": dict(line.get('boundaries', {})),
-                "properties": dict(line.get('properties', {})),
-                "metrics": dict(line.get('metrics', {}))
-            }
+    return result, sim
 
-            # Determine previous line in same page+column (for tighter FP control)
-            prev_line = None
-            if prev_line_ctx and prev_line_ctx[0] == page_no and prev_line_ctx[1] == col_idx:
-                prev_line = prev_line_ctx[2]
-
-            is_head, canon_name, _score = is_heading_line(line, col_width, prev_line=prev_line)
-
-            if is_head:
-                # Save current section if it has content
-                if current_section["lines"]:
-                    sections.append(current_section)
-                # Start new section with canonical name if known
-                sec_name = canon_name or clean_for_heading(line_out["text"]).rstrip(':').strip().title() or "Section"
-                current_section = {"section": sec_name, "lines": []}
-                # Do not include the heading line itself as content
-            else:
-                current_section["lines"].append(line_out)
-
-            # Update previous line context for same page/column
-            prev_line_ctx = (page_no, col_idx, line)
-
-    # Flush last section
-    if current_section["lines"]:
-        sections.append(current_section)
-
-    # Merge duplicate sections while preserving order of first appearance
-    merged: List[Dict[str, Any]] = []
-    seen: Dict[str, Dict[str, Any]] = {}
-    for sec in sections:
-        name = sec["section"]
-        # Normalize name to canonical where possible
-        canon = guess_section_name(name) or name
-        name_key = canon
-        if name_key in seen:
-            seen[name_key]["lines"].extend(sec["lines"])
-        else:
-            new_sec = {"section": name_key, "lines": list(sec["lines"])}
-            seen[name_key] = new_sec
-            merged.append(new_sec)
-
-    # Build meta
-    all_pages = sorted(set(c.get('page', 0) for c in cols_sorted))
-    result = {
-        "meta": {
-            "pages": len(all_pages),
-            "page_list": all_pages,
-            "columns": len(cols_sorted),
-            "sections": len(merged),
-            "lines_total": sum(len(sec["lines"]) for sec in merged),
-        },
-        "sections": merged
-    }
-
-    # Print simplified JSON as requested (full print, not a glimpse)
-    printable = [
-        {
-            "section": sec["section"],
-            "lines": [ln.get("text", "") for ln in sec["lines"]]
-        }
-        for sec in merged
-    ]
-    print(json.dumps(printable, ensure_ascii=False, indent=2))
-
-    return result
-
-def simple_json(data: Dict[str, Any]) -> json:
-    """
-    Convert full JSON to simplified JSON with just section names and line texts.
-    """
-    if not data or 'sections' not in data:
-        return json.dumps([{"section": "Unknown", "lines": []}], ensure_ascii=False, indent=2)
-    
-    simple_ = [
-        {
-            "section": sec.get("section", "Unknown"),
-            "lines": [ln.get("text", "") for ln in sec.get("lines", [])]
-        }
-        for sec in data.get("sections", [])
-    ]
-    return simple_
-    
-
-
-# --------- Demo (static inputs) ----------
-# This demo assumes you already produced column-wise lines using get_lines.get_column_wise_lines.
-# If you want to test end-to-end here, uncomment the imports and generate columns below.
 
 def main():
-    # Optional end-to-end demo (static). Uncomment to run full pipeline within this module.
-    from src.PDF_pipeline.get_words import get_words_from_pdf
-    from src.PDF_pipeline.split_columns import split_columns
-    from src.PDF_pipeline.get_lines import get_column_wise_lines
-    
+    # Static inputs (edit as needed)
     PDF_PATH = "freshteams_resume/ReactJs/UI_Developer.pdf"
     MIN_WORDS = 10
     DYNAMIC_MIN_WORDS = True
-    Y_TOL = 1.0
-    
-    pages = get_words_from_pdf(PDF_PATH)
-    columns = split_columns(pages, min_words_per_column=MIN_WORDS, dynamic_min_words=DYNAMIC_MIN_WORDS)
-    columns_with_lines = get_column_wise_lines(columns, y_tolerance=Y_TOL)
-    
-    data = segment_sections_from_columns(columns_with_lines)
-    
-    print("\nFull JSON:")
-    # print(json.dumps(data, ensure_ascii=False, indent=2))
-    simple_ = simple_json(data)
-    print("\nPretty Print:")
-    print(json.dumps(simple_, ensure_ascii=False, indent=2))
-    pass
+    Y_TOL = 0.5
+    VERBOSE = True
+
+    result, sim = run_pipeline(
+        PDF_PATH,
+        min_words_per_column=MIN_WORDS,
+        dynamic_min_words=DYNAMIC_MIN_WORDS,
+        y_tolerance=Y_TOL,
+        verbose=VERBOSE,
+    )
+
+    if VERBOSE:
+        print("\nPretty print (section-wise with page/column):")
+        print(simple_json(result))
+
+        print("\nDetected contact info:")
+        print(json.dumps(result.get("contact", {}), ensure_ascii=False, indent=2))
+
+    # Optional: save
+    # with open("segmented_full.json", "w", encoding="utf-8") as f:
+    #     json.dump(result, f, ensure_ascii=False, indent=2)
+    # with open("segmented_simple.json", "w", encoding="utf-8") as f:
+    #     f.write(sim)
+
 
 if __name__ == "__main__":
     main()

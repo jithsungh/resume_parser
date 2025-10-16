@@ -201,7 +201,7 @@ def compute_line_metrics(lines):
 
 # ===== New: tight y-overlap, column-wise output =====
 
-def group_words_into_lines_tight(words, y_tolerance=1.0):
+def group_words_into_lines_tight(words, y_tolerance=0.5):
     """
     Column-safe line grouping using tight vertical overlap (no extra thresholds).
     """
@@ -283,7 +283,7 @@ def _truncate(text, max_len=120):
 def main():
     # Static inputs
     PDF_PATH = "freshteams_resume/ReactJs/UI_Developer.pdf"
-    Y_TOL = 1.0                 # tight y-overlap tolerance
+    Y_TOL = 0.5                 # tight y-overlap tolerance
     MIN_WORDS = 10              # min words per column
     DYNAMIC_MIN_WORDS = True    # dynamic min-words (4% of page words, at least MIN_WORDS)
     MAX_LINES_PREVIEW = 6       # preview lines per column
@@ -360,5 +360,5 @@ def main():
     print("\nDone.")
 
 
-if __name__ == "__main__":
-    main()
+# if __name__ == "__main__":
+#     main()
