@@ -108,7 +108,7 @@ def process_directory_to_excel(
 def main():
     # Static inputs: edit these paths/settings as needed
     INPUT_DIR = "freshteams_resume/"          # directory containing PDFs
-    OUTPUT_XLSX = "outputs/batch_sections_4.xlsx"      # output Excel path
+    OUTPUT_XLSX = "outputs/batch_sections_9.xlsx"      # output Excel path (aligned with viewer)
     MAX_FILES = 1000                         # max PDFs to process
     RECURSIVE = True                         # search subdirectories
 

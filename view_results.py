@@ -10,9 +10,9 @@ from src.PDF_pipeline.segment_sections import SECTIONS
 
 # Config
 # Default Excel file name as requested. Fallback to outputs/batch_sections.xlsx if missing.
-DEFAULT_XLSX = "batch_selection_5.xlsx"
-FALLBACK_XLSX = "outputs/batch_sections_5.xlsx"
-ALSO_TRY_XLSX = "batch_sections_5.xlsx"  # batch writer default name
+DEFAULT_XLSX = "batch_selection_8.xlsx"
+FALLBACK_XLSX = "outputs/batch_sections_8.xlsx"
+ALSO_TRY_XLSX = "batch_sections_8.xlsx"  # batch writer default name
 
 # Resolve project root (this file is in project root)
 ROOT_DIR = Path(__file__).resolve().parent
@@ -31,6 +31,35 @@ def _windows_to_wsl_path(s: str) -> Path:
         rest = s[2:].replace("\\", "/").lstrip("/")
         return Path(f"/mnt/{drive}/{rest}")
     return Path(s)
+
+def _sanitize_path_str(raw: str) -> str:
+    # Remove common prefixes like file://
+    if not raw:
+        return raw
+    if raw.startswith("file://"):
+        return raw.replace("file://", "", 1)
+    return raw
+
+def _search_workspace_for(name: str) -> Path | None:
+    """Search the workspace for a file by exact filename, then by stem (preferring .pdf)."""
+    try:
+        # Exact filename match
+        matches = list(ROOT_DIR.rglob(name))
+        if matches:
+            # Prefer PDFs then shorter paths
+            matches.sort(key=lambda p: (p.suffix.lower() != ".pdf", len(str(p))))
+            return matches[0]
+        # By stem
+        stem = Path(name).stem
+        if not stem:
+            return None
+        stem_matches = [p for p in ROOT_DIR.rglob(f"{stem}.*")]
+        if stem_matches:
+            stem_matches.sort(key=lambda p: (p.suffix.lower() != ".pdf", len(str(p))))
+            return stem_matches[0]
+    except Exception:
+        pass
+    return None
 
 def _load_rows_from_excel(xlsx_path: Path) -> List[Dict[str, Any]]:
     if not xlsx_path.exists():
@@ -73,9 +102,10 @@ def _load_rows_from_excel(xlsx_path: Path) -> List[Dict[str, Any]]:
         if isinstance(contact_raw, str) and contact_raw.strip():
             try:
                 contact = json.loads(contact_raw)
+                if not isinstance(contact, dict):
+                    contact = {"raw": contact_raw}
             except Exception:
-                # keep raw string if not JSON
-                contact = {"raw": contact_raw}
+                contact = {"raw": str(contact_raw)}
         elif isinstance(contact_raw, dict):
             contact = contact_raw
 
@@ -87,13 +117,16 @@ def _load_rows_from_excel(xlsx_path: Path) -> List[Dict[str, Any]]:
             val = r[idx] or ""
             # Section lines were joined with '\n' in batch writer; split to list for UI
             if isinstance(val, str):
-                lines = [ln for ln in (val.splitlines()) if ln.strip()]
+                lines = [ln.strip() for ln in val.split("\n") if str(ln).strip()]
+            elif isinstance(val, (list, tuple)):
+                lines = [str(v).strip() for v in val if str(v).strip()]
             else:
-                lines = [str(val)] if val else []
-            sections[sec] = lines
+                lines = [str(val).strip()] if str(val).strip() else []
+            if lines:
+                sections[sec] = lines
 
         items.append({
-            "index": i,  # row index (relative to data rows)
+            "index": i,
             "pdf_path": pdf_path,
             "contact": contact,
             "sections": sections,
@@ -102,10 +135,11 @@ def _load_rows_from_excel(xlsx_path: Path) -> List[Dict[str, Any]]:
 
 def _resolve_excel_path() -> Path:
     # Allow override via env
-    if os.getenv("BATCH_XLSX"):
-        p = Path(os.getenv("BATCH_XLSX"))
+    env_val = os.getenv("BATCH_XLSX")
+    if env_val:
+        p = Path(env_val)
         if not p.is_absolute():
-            p = (ROOT_DIR / p).resolve()
+            p = ROOT_DIR / p
         if p.exists():
             return p
 
@@ -128,24 +162,40 @@ def _resolve_excel_path() -> Path:
 def _build_allowed_pdf_map(items: List[Dict[str, Any]]) -> Dict[int, Path]:
     """
     Map index -> absolute Path. Only serve files that appear in the Excel.
-    Also translate Windows-style absolute paths to WSL if needed.
+    Also translate Windows-style absolute paths to WSL if needed. Fall back to workspace search.
     """
     idx_to_path: Dict[int, Path] = {}
     for i, item in enumerate(items):
-        raw = item.get("pdf_path", "")
+        raw = str(item.get("pdf_path", "") or "").strip()
+        if not raw:
+            continue
+        raw = _sanitize_path_str(raw)
         p = Path(raw)
 
-        # Prefer absolute resolution
+        # Prefer absolute resolution or relative to project
         if not p.is_absolute():
-            p = (ROOT_DIR / p).resolve()
+            p = (ROOT_DIR / raw).resolve()
 
-        # If still missing, try Windows->WSL translation
+        # If missing, try Windows->WSL translation
         if not p.exists():
-            alt = _windows_to_wsl_path(raw)
-            if alt.is_absolute():
-                p = alt.resolve()
+            p2 = _windows_to_wsl_path(raw)
+            if p2.exists():
+                p = p2
+
+        # If still missing, search workspace by filename/stem, prefer PDF
+        if not p.exists():
+            fallback = _search_workspace_for(Path(raw).name)
+            if fallback and fallback.exists():
+                p = fallback
 
         idx_to_path[i] = p
+
+        # Optional: log missing for debugging
+        if not p.exists():
+            try:
+                print(f"[warn] Missing file for row {i}: '{raw}' -> resolved '{p}'", flush=True)
+            except Exception:
+                pass
     return idx_to_path
 
 def create_app() -> Flask:
@@ -164,16 +214,20 @@ def create_app() -> Flask:
 
     @app.get("/api/rows")
     def api_rows():
-        # Return lightweight payload, with optional filtering for blank Experience
-        # Default behavior per request: load only records where Experience is empty/missing.
-        # Can override via query param ?experience_empty=0 to return all.
-        filter_default = os.getenv("FILTER_EXPERIENCE_EMPTY", "1").lower() in ("1", "true", "yes")
-        q = request.args.get("experience_empty")
-        only_empty = filter_default if q is None else q.lower() in ("1", "true", "yes")
+        # Filtering controlled via query params. Defaults to no filtering (all).
+        # New param: experience={all|empty|nonempty}. Back-compat: experience_empty={0|1}
+        q_mode = request.args.get("experience")
+        q_legacy = request.args.get("experience_empty")
 
         def has_empty_experience(item: Dict[str, Any]) -> bool:
             secs = item.get("sections", {}) or {}
-            exp_lines = secs.get("Experience")
+            # find the experience key case-insensitively
+            exp_key = None
+            for k in secs.keys():
+                if str(k).strip().lower() == "experience":
+                    exp_key = k
+                    break
+            exp_lines = secs.get(exp_key) if exp_key is not None else None
             # treat missing or empty list/string as empty
             if exp_lines is None:
                 return True
@@ -183,9 +237,26 @@ def create_app() -> Flask:
                 return len([ln for ln in exp_lines if str(ln).strip()]) == 0
             return False
 
+        # Determine filter mode
+        mode = "all"
+        if q_mode:
+            v = q_mode.strip().lower()
+            if v in ("empty", "none"):
+                mode = "empty"
+            elif v in ("nonempty", "notnull", "not-null"):
+                mode = "nonempty"
+            else:
+                mode = "all"
+        elif q_legacy is not None:
+            # legacy boolean flag
+            mode = "empty" if q_legacy.strip().lower() in ("1", "true", "yes") else "all"
+
         payload = []
         for i, item in enumerate(items):
-            if only_empty and not has_empty_experience(item):
+            empty = has_empty_experience(item)
+            if mode == "empty" and not empty:
+                continue
+            if mode == "nonempty" and empty:
                 continue
             payload.append({
                 "i": i,
@@ -201,15 +272,22 @@ def create_app() -> Flask:
         if i < 0 or i >= len(items):
             abort(404)
         p = path_map.get(i)
-        if not p or not p.exists() or not p.suffix.lower() == ".pdf":
+        if not p or not p.exists():
             abort(404)
-        # Stream PDF
-        return send_file(str(p), mimetype="application/pdf", conditional=True)
+        # Determine mimetype
+        ext = p.suffix.lower()
+        if ext == ".pdf":
+            mimetype = "application/pdf"
+        elif ext in (".png", ".jpg", ".jpeg"):
+            mimetype = f"image/{'jpeg' if ext in ('.jpg', '.jpeg') else 'png'}"
+        else:
+            # default binary; iframe may not render but still allows download
+            mimetype = "application/octet-stream"
+        return send_file(str(p), mimetype=mimetype, conditional=True)
 
     return app
 
 if __name__ == "__main__":
     app = create_app()
-    # Windows/WSL-friendly localhost run
     app.run(host='0.0.0.0', port=5000, debug=True)
 

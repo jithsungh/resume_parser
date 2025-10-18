@@ -16,7 +16,7 @@ from src.PDF_pipeline.segment_sections import (
 EMAIL_RE = re.compile(r'[\w\.-]+@[\w\.-]+\.\w{2,}', re.IGNORECASE)
 # Broad international phone pattern; avoids too-short matches
 PHONE_RE = re.compile(
-    r'(?:\+|00)?\d{1,3}[\s\-\.]?(?:\(?\d{2,5}\)?[\s\-\.]?)?\d{3,5}[\s\-\.]?\d{3,5}',
+    r'(?:\+|00)?\d{1,3}[\s\-\.]?(?:\(?\d{2,5}\)?[\\s\-\.]?)?\d{3,5}[\\s\-\.]?\d{3,5}',
     re.IGNORECASE,
 )
 LINKEDIN_RE = re.compile(r'(?:https?://)?(?:www\.)?linkedin\.com/[^\s,;]+', re.IGNORECASE)
@@ -30,6 +30,83 @@ LOCATION_CANDIDATE_RE = re.compile(
 
 # Name heuristic (regex-and-heuristic): 1-4 Title-Case tokens, no digits, no email/url
 NAME_LINE_RE = re.compile(r"^[A-Z][a-zA-Z'\-]+(?: [A-Z][a-zA-Z'\-]+){0,3}$")
+
+# Optional spaCy NLP for robust PERSON/GPE extraction
+try:
+    import spacy  # type: ignore
+    _NLP = None  # lazy-load
+except Exception:  # pragma: no cover
+    spacy = None  # type: ignore
+    _NLP = None  # type: ignore
+
+
+def _get_spacy_model():
+    global _NLP
+    if _NLP is not None:
+        return _NLP
+    if spacy is None:
+        return None
+    try:
+        # Prefer small English model if installed
+        for name in ("en_core_web_sm", "en_core_web_md", "en_core_web_lg"):
+            try:
+                _NLP = spacy.load(name)  # type: ignore
+                return _NLP
+            except Exception:
+                continue
+        # Fallback to blank pipeline (no NER)
+        _NLP = spacy.blank("en")  # type: ignore
+        return _NLP
+    except Exception:
+        return None
+
+
+def _infer_name_from_email(email: str) -> Optional[str]:
+    if not email:
+        return None
+    try:
+        local = email.split("@", 1)[0]
+        # Remove numbers and common noise
+        local = re.sub(r"\d+", " ", local)
+        # Split on separators
+        parts = re.split(r"[._\-+ ]+", local)
+        parts = [p for p in parts if p and p.lower() not in ("mail", "email", "gmail", "yahoo", "outlook", "hotmail")]
+        if not parts:
+            return None
+        # Heuristic: 1-3 tokens, title case
+        cand = " ".join(parts[:3]).strip()
+        cand = " ".join(w.capitalize() for w in cand.split())
+        # Basic sanity: 2-30 chars and at least one space or length >= 4
+        if 2 <= len(cand) <= 50:
+            return cand
+    except Exception:
+        pass
+    return None
+
+
+def _spacy_name_location(text: str) -> Tuple[Optional[str], Optional[str]]:
+    nlp = _get_spacy_model()
+    if nlp is None:
+        return None, None
+    try:
+        doc = nlp(text)
+        name = None
+        location = None
+        for ent in doc.ents:
+            if ent.label_ == "PERSON" and not name:
+                t = ent.text.strip()
+                # Avoid picking emails/urls/very short
+                if t and 2 <= len(t) <= 60 and "@" not in t and "http" not in t:
+                    name = t
+            if ent.label_ in ("GPE", "LOC") and not location:
+                lt = ent.text.strip()
+                if lt and 2 <= len(lt) <= 80:
+                    location = lt
+            if name and location:
+                break
+        return name, location
+    except Exception:
+        return None, None
 
 
 def _collect_all_lines(columns_with_lines: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -72,6 +149,7 @@ def extract_contact_info_from_lines(columns_with_lines: List[Dict[str, Any]]) ->
     """
     Regex-based extraction of contact fields from lines.
     Priority: early lines on first page, then fallback to whole text.
+    Adds optional spaCy-based PERSON/GPE extraction and email-based name heuristic.
     """
     info: Dict[str, Any] = {}
     all_lines = _collect_all_lines(columns_with_lines)
@@ -144,6 +222,20 @@ def extract_contact_info_from_lines(columns_with_lines: List[Dict[str, Any]]) ->
         if loc:
             info["location"] = loc.strip()
 
+    # Email-based name heuristic (non-blocking)
+    if "name" not in info and "email" in info:
+        nm = _infer_name_from_email(info.get("email", ""))
+        if nm:
+            info["name"] = nm
+
+    # spaCy-based extraction from the head window text
+    head_text = "\n".join((ln.get("text") or "") for ln in head_window)
+    sp_name, sp_loc = _spacy_name_location(head_text)
+    if sp_name and "name" not in info:
+        info["name"] = sp_name
+    if sp_loc and "location" not in info:
+        info["location"] = sp_loc
+
     return info
 
 
@@ -176,7 +268,14 @@ def run_pipeline(
 
     if verbose:
         total_words = sum(len(p.get("words", [])) for p in pages)
-        print(f"Pages: {len(pages)} | Total words: {total_words}")
+        # Detect extractor type by presence of span attributes
+        first_word = None
+        for p in pages:
+            if p.get("words"):
+                first_word = p["words"][0]
+                break
+        using_pymupdf = bool(first_word and ("font" in first_word or "font_size" in first_word))
+        print(f"Pages: {len(pages)} | Total words: {total_words} | Extractor: {'PyMuPDF' if using_pymupdf else 'pdfplumber'}")
 
     # 2) Columns
     columns = split_columns(
@@ -192,6 +291,17 @@ def run_pipeline(
     if verbose:
         line_count = sum(len(c.get("lines", [])) for c in columns_with_lines)
         print(f"Total lines: {line_count}")
+        # Show a small sample of metrics to verify PyMuPDF attributes are present
+        shown = 0
+        for c in columns_with_lines:
+            for ln in c.get("lines", [])[:3]:
+                m = ln.get("metrics", {})
+                print(f"  line[{ln.get('line_index', 0)}] fs_geo={m.get('avg_font_size', 0):.1f} fs_span={m.get('avg_span_font_size', 0):.1f} bold_ratio={m.get('bold_ratio', 0):.2f}")
+                shown += 1
+                if shown >= 5:
+                    break
+            if shown >= 5:
+                break
 
     # 4) Sections (prints simplified JSON internally as well)
     result = segment_sections_from_columns(columns_with_lines)
@@ -237,5 +347,5 @@ def main():
     #     f.write(sim)
 
 
-if __name__ == "__main__":
-    main()
+# if __name__ == "__main__":
+#     main()

@@ -161,7 +161,7 @@ def create_line_data(line_words, line_index):
 def compute_line_metrics(lines):
     """
     Compute detailed metrics for each line.
-    Returns dict: line_index -> (height, space_above, space_below, char_count, word_count, avg_font_size, line_width)
+    Returns dict: line_index -> metrics dict
     """
     metrics = {}
     if not lines:
@@ -173,11 +173,26 @@ def compute_line_metrics(lines):
         word_count = line['properties']['word_count']
         line_width = line['boundaries']['width']
 
-        word_heights = [word['bottom'] - word['top'] for word in line['words']]
-        avg_font_size = statistics.mean(word_heights) if word_heights else 0
+        # Geometric font proxy (from bbox heights)
+        word_heights = [w.get('bottom', 0) - w.get('top', 0) for w in line['words']]
+        avg_font_size_geo = statistics.mean(word_heights) if word_heights else 0.0
 
-        space_above = 0
-        space_below = 0
+        # PyMuPDF attributes if available
+        span_sizes = [float(w.get('font_size', 0) or 0) for w in line['words'] if 'font_size' in w]
+        avg_span_font_size = statistics.mean(span_sizes) if span_sizes else 0.0
+        fonts = [str(w.get('font', '')) for w in line['words'] if w.get('font')]
+        colors = [int(w.get('font_color', 0) or 0) for w in line['words'] if 'font_color' in w]
+        bold_flags = [bool(w.get('is_bold', False)) for w in line['words']]
+        bold_ratio = (sum(1 for b in bold_flags if b) / len(bold_flags)) if bold_flags else 0.0
+
+        # Dominant font/color
+        def _mode(arr):
+            return max(set(arr), key=arr.count) if arr else None
+        dominant_font = _mode(fonts)
+        dominant_color = _mode(colors)
+
+        space_above = 0.0
+        space_below = 0.0
 
         if i > 0:
             prev_line = lines[i-1]
@@ -187,15 +202,19 @@ def compute_line_metrics(lines):
             next_line = lines[i+1]
             space_below = next_line['boundaries']['top'] - line['boundaries']['bottom']
 
-        metrics[i] = (
-            height,
-            space_above,
-            space_below,
-            char_count,
-            word_count,
-            avg_font_size,
-            line_width
-        )
+        metrics[i] = {
+            'height': float(height),
+            'space_above': float(space_above),
+            'space_below': float(space_below),
+            'char_count': int(char_count),
+            'word_count': int(word_count),
+            'avg_font_size': float(avg_font_size_geo),
+            'avg_span_font_size': float(avg_span_font_size),
+            'bold_ratio': float(bold_ratio),
+            'dominant_font': dominant_font,
+            'dominant_color': dominant_color,
+            'line_width': float(line_width),
+        }
     return metrics
 
 
@@ -255,24 +274,13 @@ def get_column_wise_lines(columns, y_tolerance=1.0):
         # Attach metrics per line for convenience
         for i, line in enumerate(lines):
             if i in metrics:
-                h, sa, sb, cc, wc, fs, lw = metrics[i]
-                line['metrics'] = {
-                    'height': h,
-                    'space_above': sa,
-                    'space_below': sb,
-                    'char_count': cc,
-                    'word_count': wc,
-                    'avg_font_size': fs,
-                    'line_width': lw
-                }
+                line['metrics'] = metrics[i]
 
         col_out = dict(col)
         col_out['lines'] = lines
         result.append(col_out)
 
     return result
-
-
 
 
 def _truncate(text, max_len=120):

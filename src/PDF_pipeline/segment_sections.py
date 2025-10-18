@@ -1,6 +1,8 @@
 import re
 import json
 from typing import List, Dict, Any, Tuple, Optional
+import os
+from pathlib import Path
 
 # Input to this module:
 # - columns_with_lines: output of get_lines.get_column_wise_lines(...)
@@ -31,7 +33,7 @@ SECTIONS: Dict[str, List[str]] = {
         "summary", "professional summary", "career summary", "profile", "about me",
         "executive summary", "personal profile", "introduction", "career objective",
         "objective", "professional profile", "career overview", "personal statement",
-        "highlights", "overview"
+        "highlights", "overview", "professional synopsis"  # added
     ],
     "Skills": [
         "skills", "key skills", "technical skills", "non technical skills", "nontechnical skills",
@@ -43,14 +45,18 @@ SECTIONS: Dict[str, List[str]] = {
         "technical skills & expertise", "technical skills and expertise", "professional skills & expertise",
         "professional skills and expertise", "it knowledge", "it skills", "it skills & expertise", "it skills and expertise",
         "it skills & tools", "it skills and tools", "it competencies", "skills summary", "skills & expertise",
-        "skills and expertise"
+        "skills and expertise", "technical skill set"  # added
     ],
     "Experience": [
         "experience", "current organisation", "current organization", "previous organzations","previous organisations", "job title", "work experience", "work history", "professional experience",
         "employment history", "career history", "relevant experience", "industry experience",
         "internship experience", "practical experience", "volunteer experience",
         "freelance experience", "project experience", "consulting experience", "military experience",
-        "employment", "professional history", "employment details"
+        "employment", "professional history", "employment details",
+        # added variants / misspellings / composites
+        "professional experiance", "experience summary", "company details", "internship",
+        "exprofessional experience", "employment profile", "experiance & projects", "experien",
+        "experiance and work location"
     ],
     "Projects": [
         "projects", "project", "relevant projects", "key projects", "selected projects",
@@ -58,7 +64,9 @@ SECTIONS: Dict[str, List[str]] = {
         "client projects", "independent projects", "case studies", "portfolio projects",
         "course projects", "personal projects", "project work", "project experience",
         "project details", "project summary", "notable projects", "significant projects",
-        "projects delivered", "projects completed", "projects handled"
+        "projects delivered", "projects completed", "projects handled",
+        # added
+        "details of the projects worked on", "open source"
     ],
     "Education": [
         "education", "educational qualifications", "academic background", "academics",
@@ -66,19 +74,27 @@ SECTIONS: Dict[str, List[str]] = {
         "college education", "schooling", "coursework", "academic achievements",
         "research and education", "qualifications", "educational details", "educational history",
         "education details", "education history", "educational qualifications", "educational profile",
-        "academic qualifications", "academic profile", "education qualifications", "education qualification"
+        "academic qualifications", "academic profile", "education qualifications", "education qualification",
+        # added
+        "academic details", "academic achievements",  # ensure present
+        # composites
+        "education & certifications", "education and certifications", "education certifications"
     ],
     "Certifications": [
         "certifications", "certificates", "licenses", "courses", "training", "professional development",
         "workshops", "online courses", "continuing education", "special training",
         "technical certifications", "certificates", "awards and certifications", "awards & certifications",
-        "courses and certifications", "courses & certifications", "courses & certificates", "courses and certificates"
+        "courses and certifications", "courses & certifications", "courses & certificates", "courses and certificates",
+        # added
+        "certificate"
     ],
     "Achievements": [
         "achievements", "key achievements", "awards", "honors", "recognitions", "distinctions",
         "milestones", "accomplishments", "notable achievements", "career highlights", "extracurricular activities",
         "extracurricular & achievements", "extracurricular and achievements", "honors & achievements", "honors and achievements",
-        "honors & awards", "honors and awards"
+        "honors & awards", "honors and awards",
+        # added common misspelling
+        "extracuricular activities"
     ],
     "Publications": [
         "publications", "research papers", "journal articles", "conference papers",
@@ -89,7 +105,9 @@ SECTIONS: Dict[str, List[str]] = {
         "thesis", "dissertation", "research interests"
     ],
     "Languages": [
-        "languages", "language proficiency", "spoken languages", "language skills"
+        "languages", "language proficiency", "spoken languages", "language skills",
+        # added
+        "languages known", "languages known and other information"
     ],
     "Volunteer": [
         "volunteer", "volunteering", "community involvement", "social work",
@@ -124,12 +142,100 @@ CANON_NOSEP_MAP: Dict[str, str] = {
     for kw in kws
 }
 
+# ---------------- Self-learning: load learned variants and extend SECTIONS ----------------
+_LEARNED_FILE_CANDIDATES = [
+    Path(__file__).resolve().parent / "sections_learned.jsonl",
+    Path(__file__).resolve().parent / "sections_learned.json",
+    Path.cwd() / "sections_learned.jsonl",
+    Path.cwd() / "sections_learned.json",
+]
+
+
+def _load_learned_variants() -> Dict[str, List[str]]:
+    out: Dict[str, List[str]] = {}
+    for p in _LEARNED_FILE_CANDIDATES:
+        try:
+            if not p.exists():
+                continue
+            if p.suffix.lower() == ".jsonl":
+                with p.open("r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            obj = json.loads(line)
+                        except Exception:
+                            continue
+                        canon = (obj.get("canonical") or obj.get("section") or "").strip()
+                        header = (obj.get("header") or obj.get("text") or "").strip()
+                        if canon and header:
+                            out.setdefault(canon, []).append(header)
+            else:
+                with p.open("r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    for canon, variants in data.items():
+                        if isinstance(variants, list):
+                            out.setdefault(canon, []).extend([str(v) for v in variants])
+                elif isinstance(data, list):
+                    for obj in data:
+                        if not isinstance(obj, dict):
+                            continue
+                        canon = (obj.get("canonical") or obj.get("section") or "").strip()
+                        header = (obj.get("header") or obj.get("text") or "").strip()
+                        if canon and header:
+                            out.setdefault(canon, []).append(header)
+        except Exception:
+            continue
+    return out
+
+
+# Apply learned variants into SECTIONS before building maps
+try:
+    _learned = _load_learned_variants()
+    for _canon, _vars in _learned.items():
+        if not _vars:
+            continue
+        if _canon not in SECTIONS:
+            # if an unknown canonical appears, treat as Additional Information bucket
+            SECTIONS.setdefault("Additional Information", []).extend(_vars)
+        else:
+            SECTIONS[_canon].extend(_vars)
+except Exception:
+    pass
+
+# ---------------- Build maps from (possibly extended) SECTIONS ----------------
+SECTION_MAP: Dict[str, str] = {
+    kw.lower(): canon for canon, kws in SECTIONS.items() for kw in kws
+}
+
+CANON_NOSEP_MAP: Dict[str, str] = {
+    re.sub(r"[^a-z0-9]+", "", kw.lower()): canon
+    for canon, kws in SECTIONS.items()
+    for kw in kws
+}
+
+# Debug/feature flags via env
+def _env_flag(name: str, default: bool = False) -> bool:
+    v = os.getenv(name)
+    if v is None:
+        return default
+    return str(v).lower() in ("1", "true", "yes", "on")
+
+_SEG_DEBUG = _env_flag("SEG_DEBUG", False)
+
+
+def _embeddings_allowed() -> bool:
+    # Opt-in to embeddings to avoid slow model downloads by default
+    return _env_flag("SEG_ENABLE_EMBEDDINGS", False)
 
 # Utility
 def clean_for_heading(text: str) -> str:
     t = text or ""
     # Normalize common decorative separators
     t = t.replace("•", " ").replace("·", " ").replace("|", " ")
+    t = t.replace("&", " and ")  # keep meaning of '&' before stripping
     t = t.replace("—", "-").replace("–", "-")
     # Keep only a conservative set of characters for comparison
     t = re.sub(r'[^A-Za-z0-9\s:.-]', ' ', t)
@@ -265,48 +371,71 @@ def _collect_candidates(columns_with_lines: List[Dict[str, Any]]):
                 'line_ref': line,
             }
             cands.append((_reading_key(col, line), cand))
+    if _SEG_DEBUG:
+        print(f"[segment] candidates collected: {len(cands)}")
     return cands
+
+
+def _metric_font_size(m: Dict[str, Any]) -> float:
+    """Prefer span-derived font size from PyMuPDF; fallback to geometric avg_font_size."""
+    fs_span = m.get('avg_span_font_size')
+    try:
+        fs_span = float(fs_span)
+    except Exception:
+        fs_span = None
+    if isinstance(fs_span, float) and fs_span > 0:
+        return fs_span
+    return _safe(m.get('avg_font_size'))
 
 
 def _filter_candidates(cands: List[Tuple[Tuple[int, float, float], Dict[str, Any]]]) -> List[Tuple[Tuple[int, float, float], Dict[str, Any]]]:
     if not cands:
         return cands
-    # Compute medians across candidates
-    fonts = [_safe(c[1]['metrics'].get('avg_font_size')) for c in cands]
+    # Compute medians across candidates (font: prefer span font size)
+    fonts = [_metric_font_size(c[1].get('metrics', {})) for c in cands]
     spaces = [_safe(c[1]['metrics'].get('space_above')) for c in cands]
     widths = [_safe(c[1]['width_ratio']) for c in cands]
     uppers = [_safe(c[1]['uppercase_ratio']) for c in cands]
+    bolds = [_safe(c[1]['metrics'].get('bold_ratio')) for c in cands]
 
     med_font = _median(fonts) or 0.0
     med_space = _median(spaces) or 0.0
     med_width = _median(widths) or 0.0
     med_upper = _median(uppers) or 0.0
+    med_bold = _median(bolds) or 0.0
 
     kept = []
     for key, cand in cands:
-        f = _safe(cand['metrics'].get('avg_font_size'))
-        sa = _safe(cand['metrics'].get('space_above'))
+        m = cand.get('metrics', {})
+        f = _metric_font_size(m)
+        sa = _safe(m.get('space_above'))
         wr = _safe(cand.get('width_ratio'))
         ur = _safe(cand.get('uppercase_ratio'))
+        br = _safe(m.get('bold_ratio'))
         wc = int(cand['line_ref'].get('properties', {}).get('word_count', 0))
 
-        # Reject if simultaneously too small font, cramped, low uppercase, and looks like a sentence
+        # Reject only if multiple signals indicate non-heading
         small_font = (med_font > 0 and f < 0.7 * med_font)
         cramped = (sa < max(4.0, 0.5 * med_space))
         low_upper = (ur < max(0.6, 0.7 * med_upper))
+        low_bold = (br < max(0.15, 0.5 * med_bold))  # allow headings that aren't bold
         long_words = (wc > 6 and wr > 0.9)
 
-        if small_font and cramped and low_upper and long_words:
-            # likely a false positive
+        # If either bold or uppercase or normal font size, keep even if other signals are weak
+        looks_like_heading = (br >= 0.3) or (ur >= 0.7) or (not small_font)
+        if not looks_like_heading and small_font and cramped and low_upper and low_bold and long_words:
             continue
         kept.append((key, cand))
 
-    # If everything got filtered (over-aggressive), fall back to original candidates
+    if _SEG_DEBUG:
+        print(f"[segment] candidates kept after filter: {len(kept)} (from {len(cands)})")
     return kept if kept else cands
 
 
 def _is_unknown_heading(line: Dict[str, Any], col_stats: Dict[str, float]) -> bool:
-    """Heuristic to catch probable headings that didn't match any known keyword."""
+    """Heuristic to catch probable headings that didn't match any known keyword.
+    Uses PyMuPDF metrics when available (bold_ratio, avg_span_font_size).
+    """
     text = (line.get('text') or '').strip()
     if not text:
         return False
@@ -317,17 +446,18 @@ def _is_unknown_heading(line: Dict[str, Any], col_stats: Dict[str, float]) -> bo
 
     m = dict(line.get('metrics', {}))
     ur = uppercase_ratio(text)
-    fs = _safe(m.get('avg_font_size'))
+    fs = _metric_font_size(m)
+    br = _safe(m.get('bold_ratio'))
     sa = _safe(m.get('space_above'))
 
     col_font_med = col_stats.get('font_median', 0.0)
     col_space_med = col_stats.get('space_median', 0.0)
 
-    # Heading-like if font noticeably larger or uppercase and has some space above or ends with ':'
-    if (fs >= 1.15 * max(1.0, col_font_med) or ur >= 0.8 or s.endswith(':')) and (sa >= max(2.0, 1.0 * col_space_med)):
-        # Also avoid numeric-only, e.g., dates
+    # Heading-like if larger font OR bold OR uppercase, and some space above, or trailing colon
+    font_or_style = (fs >= 1.15 * max(1.0, col_font_med)) or (br >= 0.35) or (ur >= 0.8)
+    spaced = (sa >= max(2.0, 1.0 * col_space_med))
+    if (font_or_style and spaced) or s.endswith(':'):
         if re.search(r"[A-Za-z]", s):
-            # Don't treat as unknown if it actually matches a known section after normalization
             return guess_section_name(s) is None
     return False
 
@@ -347,7 +477,9 @@ def segment_sections_from_columns(columns_with_lines: List[Dict[str, Any]]) -> D
     # First pass: candidates
     cands = _collect_candidates(columns_with_lines)
     cands = _filter_candidates(cands)
-    accepted_positions: Dict[Tuple[int, int, int], str] = {}
+    if _SEG_DEBUG:
+        print(f"[segment] accepted positions building from {len(cands)} candidates")
+    accepted_positions: Dict[Tuple[Tuple[int, int, int], str]] = {}
     for _, c in cands:
         key = (c['page'], c['column_index'], c['line_index'])
         accepted_positions[key] = c['canon']
@@ -358,7 +490,7 @@ def segment_sections_from_columns(columns_with_lines: List[Dict[str, Any]]) -> D
         page_no = int(col.get('page', 0))
         col_idx = int(col.get('column_index', 0))
         lines = col.get('lines', [])
-        fonts = [_safe(l.get('metrics', {}).get('avg_font_size')) for l in lines]
+        fonts = [_metric_font_size(l.get('metrics', {})) for l in lines]
         spaces = [_safe(l.get('metrics', {}).get('space_above')) for l in lines]
         col_stats_map[(page_no, col_idx)] = {
             'font_median': _median(fonts),
@@ -393,20 +525,48 @@ def segment_sections_from_columns(columns_with_lines: List[Dict[str, Any]]) -> D
                     sections.append(current_section)
                 sec_name = accepted_positions[key] or "Section"
                 current_section = {"section": sec_name, "lines": []}
-                # Skip adding the heading line itself
                 continue
 
-            # Not a recognized heading: record probable unknown headings separately
+            # Heuristic unknown heading -> try embedding classification
             if _is_unknown_heading(line, stats):
-                unknown_headings.append({
-                    "page": page_no,
-                    "column_index": col_idx,
-                    "line_index": int(line.get('line_index', li)),
-                    "text": line.get('text', '') or '',
-                    "boundaries": dict(line.get('boundaries', {})),
-                    "properties": dict(line.get('properties', {})),
-                    "metrics": dict(line.get('metrics', {})),
-                })
+                raw_text = line.get('text', '') or ''
+                predicted, score = (None, 0.0)
+                if _embeddings_allowed():
+                    if _SEG_DEBUG:
+                        print(f"[segment] classifying unknown heading via embeddings: '{raw_text}'")
+                    predicted, score = classify_header_embedding(clean_for_heading(raw_text))
+                else:
+                    if _SEG_DEBUG:
+                        print(f"[segment] embeddings disabled; recording unknown heading: '{raw_text}'")
+
+                if predicted:
+                    # persist learned variant for future exact match
+                    try:
+                        attrs = {
+                            "score": score,
+                            "uppercase_ratio": uppercase_ratio(raw_text),
+                            "metrics": dict(line.get('metrics', {})),
+                        }
+                        _persist_learned_variant(predicted, raw_text.strip(), attrs)
+                    except Exception:
+                        pass
+                    # start a new section and skip adding heading line itself
+                    if current_section["lines"]:
+                        sections.append(current_section)
+                    current_section = {"section": predicted, "lines": []}
+                    continue
+                else:
+                    # record as unknown, skip adding as content
+                    unknown_headings.append({
+                        "page": page_no,
+                        "column_index": col_idx,
+                        "line_index": int(line.get('line_index', li)),
+                        "text": raw_text,
+                        "boundaries": dict(line.get('boundaries', {})),
+                        "properties": dict(line.get('properties', {})),
+                        "metrics": dict(line.get('metrics', {})),
+                    })
+                    continue
 
             # Regular content line
             line_out = {
@@ -454,6 +614,9 @@ def segment_sections_from_columns(columns_with_lines: List[Dict[str, Any]]) -> D
                 for uh in unknown_headings
             ]
         })
+
+    if _SEG_DEBUG:
+        print(f"[segment] sections merged: {len(merged)}, unknown headings: {len(unknown_headings)}")
 
     # Build meta
     all_pages = sorted(set(c.get('page', 0) for c in cols_sorted))
@@ -510,6 +673,102 @@ def pretty_print_segmented_sections(data: Dict[str, Any]) -> None:
             col_idx = line.get("column_index", 0)
             text = line.get("text", "")
             print(f"[Page {page}, Col {col_idx}] {text}")
+
+
+# ---------------- Embedding-based classifier (tiny model, optional) ----------------
+_EMBEDDER = None
+_ST_UTIL = None
+_SECTION_EMB = None  # type: ignore
+_LEARNED_CACHE: set = set()
+
+
+def _get_embedder():
+    global _EMBEDDER, _ST_UTIL
+    if _EMBEDDER is not None:
+        return _EMBEDDER
+    try:
+        from sentence_transformers import SentenceTransformer, util  # type: ignore
+        _EMBEDDER = SentenceTransformer("all-MiniLM-L6-v2")
+        _ST_UTIL = util
+    except Exception:
+        _EMBEDDER = None
+        _ST_UTIL = None
+    return _EMBEDDER
+
+
+def _build_section_embeddings():
+    global _SECTION_EMB
+    if _SECTION_EMB is not None:
+        return _SECTION_EMB
+    embedder = _get_embedder()
+    _SECTION_EMB = {}
+    if embedder is None:
+        return _SECTION_EMB
+    texts = []
+    keys = []
+    for canon, variants in SECTIONS.items():
+        # Use canonical + variants as training text
+        corpus = " ".join([canon] + list(dict.fromkeys([v for v in variants if v]))).lower()
+        texts.append(corpus)
+        keys.append(canon)
+    mat = embedder.encode(texts, normalize_embeddings=True)
+    for i, canon in enumerate(keys):
+        _SECTION_EMB[canon] = mat[i]
+    return _SECTION_EMB
+
+
+def classify_header_embedding(header_text: str, threshold: float = 0.68) -> Tuple[Optional[str], float]:
+    # Respect env flag to avoid slow model downloads by default
+    if not _embeddings_allowed():
+        return None, 0.0
+    header = (header_text or "").strip()
+    if not header:
+        return None, 0.0
+    embedder = _get_embedder()
+    if embedder is None or _ST_UTIL is None:
+        return None, 0.0
+    section_emb = _build_section_embeddings()
+    if not section_emb:
+        return None, 0.0
+    vec = embedder.encode([header.lower()], normalize_embeddings=True)
+    best = None
+    best_score = -1.0
+    for canon, emb in section_emb.items():
+        score = float(_ST_UTIL.cos_sim(vec, emb)[0][0])  # type: ignore
+        if score > best_score:
+            best_score = score
+            best = canon
+    if best is not None and best_score >= threshold:
+        return best, float(best_score)
+    return None, float(best_score)
+
+
+def _persist_learned_variant(canon: str, header_text: str, attrs: Dict[str, Any]) -> None:
+    key = f"{canon}|{header_text.strip().lower()}"
+    if key in _LEARNED_CACHE:
+        return
+    _LEARNED_CACHE.add(key)
+    payload = {
+        "canonical": canon,
+        "header": header_text,
+        "attributes": attrs,
+    }
+    for p in _LEARNED_FILE_CANDIDATES:
+        try:
+            # Prefer jsonl
+            if p.suffix.lower() == ".jsonl" or p.name.endswith(".jsonl"):
+                with p.open("a", encoding="utf-8") as f:
+                    f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+                return
+        except Exception:
+            continue
+    # Fallback: write to first candidate as jsonl
+    p = _LEARNED_FILE_CANDIDATES[0]
+    try:
+        with p.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
 
 
 # --------- Demo (static inputs) ----------

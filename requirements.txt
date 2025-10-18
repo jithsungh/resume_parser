@@ -1,9 +1,22 @@
 # Resume Parser Pipeline Requirements
 pdfplumber>=0.9.0
+
 pandas>=2.0.0
 numpy>=1.24.0
 openpyxl>=3.1.0
 pathlib2>=2.3.7
 regex>=2023.0.0
+# Added for PyMuPDF-based extraction and embeddings
+pymupdf>=1.23.0
+sentence-transformers>=2.7.0
+torch>=2.0.0; platform_system!="Darwin" or platform_machine!="arm64"
+transformers>=4.40.0
+# Added for DOCX parsing
+python-docx>=0.8.11
+# Optional: spaCy for NER-based name and location extraction
+spacy>=3.7.0
+# Added for OCR-based image pipeline
+pytesseract>=0.3.10
+pillow>=10.0.0
 
 
