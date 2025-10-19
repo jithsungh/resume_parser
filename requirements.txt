@@ -15,8 +15,14 @@ transformers>=4.40.0
 python-docx>=0.8.11
 # Optional: spaCy for NER-based name and location extraction
 spacy>=3.7.0
-# Added for OCR-based image pipeline
-pytesseract>=0.3.10
+# Added for OCR-based image pipeline with EasyOCR (better accuracy than Tesseract)
+easyocr>=1.7.0
 pillow>=10.0.0
+# Added for robust pipeline with layout-aware processing
+opencv-python>=4.8.0
+tqdm>=4.66.0
+# Added for histogram-based column detection
+scipy>=1.11.0
+matplotlib>=3.7.0  # Optional: for histogram visualization
 
 

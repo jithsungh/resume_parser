@@ -2,18 +2,23 @@ import os
 from typing import Any, Dict, List, Optional
 
 import fitz  # PyMuPDF for rasterization
-import pytesseract
+import easyocr
 from PIL import Image
 import numpy as np
 
 PageT = Dict[str, Any]
 WordT = Dict[str, Any]
 
+# Global EasyOCR reader instance (initialized lazily)
+_EASYOCR_READER = None
 
-# Allow overriding tesseract path via env var on Windows
-_TESS_CMD = os.getenv("TESSERACT_CMD")
-if _TESS_CMD:
-    pytesseract.pytesseract.tesseract_cmd = _TESS_CMD
+
+def _get_easyocr_reader(languages: List[str] = ['en'], gpu: bool = False):
+    """Get or initialize the EasyOCR reader (singleton pattern for efficiency)."""
+    global _EASYOCR_READER
+    if _EASYOCR_READER is None:
+        _EASYOCR_READER = easyocr.Reader(languages, gpu=gpu)
+    return _EASYOCR_READER
 
 
 def _open_pdf(pdf_path: str):
@@ -57,41 +62,54 @@ def _ocr_words_from_image(
     page_width: float,
     page_height: float,
     *,
-    lang: str = "eng",
-    config: str = "--oem 3 --psm 6",
+    languages: List[str] = ['en'],
+    gpu: bool = False,
+    paragraph: bool = False,
 ) -> List[WordT]:
-    """Run Tesseract OCR on an image and return word-level boxes in pipeline format."""
-    data = pytesseract.image_to_data(img, lang=lang, output_type=pytesseract.Output.DICT, config=config)
+    """Run EasyOCR on an image and return word-level boxes in pipeline format."""
+    reader = _get_easyocr_reader(languages=languages, gpu=gpu)
+    
+    # Convert PIL Image to numpy array
+    img_array = np.array(img)
+    
+    # Run EasyOCR - returns list of (bbox, text, confidence)
+    # bbox is [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
+    results = reader.readtext(img_array, paragraph=paragraph)
+    
     words: List[WordT] = []
-    n = len(data.get("text", []))
-    for i in range(n):
-        txt = (data["text"][i] or "").strip()
-        conf = data.get("conf", [""])[i]
-        try:
-            conf_f = float(conf)
-        except Exception:
-            conf_f = -1.0
-        if not txt:
+    for detection in results:
+        bbox, text, conf = detection
+        text = text.strip()
+        if not text:
             continue
-        x = int(data.get("left", [0])[i])
-        y = int(data.get("top", [0])[i])
-        w = int(data.get("width", [0])[i])
-        h = int(data.get("height", [0])[i])
+        
+        # Extract bounding box coordinates
+        # bbox is [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
+        x_coords = [point[0] for point in bbox]
+        y_coords = [point[1] for point in bbox]
+        
+        x0 = min(x_coords)
+        x1 = max(x_coords)
+        y0 = min(y_coords)
+        y1 = max(y_coords)
+        
+        height = y1 - y0
+        
         words.append({
-            "text": txt,
-            "x0": float(x),
-            "x1": float(x + w),
-            "top": float(y),
-            "bottom": float(y + h),
+            "text": text,
+            "x0": float(x0),
+            "x1": float(x1),
+            "top": float(y0),
+            "bottom": float(y1),
             "page": int(page_no),
             "page_width": float(page_width),
             "page_height": float(page_height),
             # No font metadata from OCR; set placeholders
             "font": "",
-            "font_size": float(h),
+            "font_size": float(height),
             "font_color": 0,
             "is_bold": False,
-            "_conf": conf_f,
+            "_conf": float(conf),
         })
     return words
 
@@ -100,17 +118,21 @@ def get_words_from_pdf_ocr(
     pdf_path: str,
     dpi: int = 300,
     *,
-    lang: str = "eng",
-    config: str = "--oem 3 --psm 6",
-    tesseract_cmd: Optional[str] = None,
+    languages: List[str] = ['en'],
+    gpu: bool = False,
+    paragraph: bool = False,
 ) -> List[PageT]:
     """
-    Rasterize each page to an image, OCR to words, and return pages in the same structure
+    Rasterize each page to an image, OCR to words using EasyOCR, and return pages in the same structure
     expected by the existing split_columns/get_lines/segment_sections pipeline.
+    
+    Args:
+        pdf_path: Path to the PDF file
+        dpi: Resolution for rendering PDF pages (default: 300)
+        languages: List of language codes for EasyOCR (default: ['en'])
+        gpu: Whether to use GPU acceleration (default: False)
+        paragraph: If True, returns paragraph-level text; if False, returns word-level (default: False)
     """
-    if tesseract_cmd:
-        pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
-
     doc = _open_pdf(pdf_path)
     pages: List[PageT] = []
     for page_index in range(len(doc)):
@@ -123,7 +145,12 @@ def get_words_from_pdf_ocr(
         ph = float(pix.height)
         img = _pil_from_pix(pix)
 
-        words = _ocr_words_from_image(img, page_index, pw, ph, lang=lang, config=config)
+        words = _ocr_words_from_image(
+            img, page_index, pw, ph, 
+            languages=languages, 
+            gpu=gpu, 
+            paragraph=paragraph
+        )
         pages.append({
             "page_no": int(page_index),
             "width": pw,

@@ -4,6 +4,7 @@ from typing import Dict, Any, Tuple, List, Optional
 
 from src.PDF_pipeline.get_words import get_words_from_pdf
 from src.PDF_pipeline.split_columns import split_columns
+from src.PDF_pipeline.histogram_column_detector import detect_columns_with_histogram
 from src.PDF_pipeline.get_lines import get_column_wise_lines
 from src.PDF_pipeline.segment_sections import (
     segment_sections_from_columns,
@@ -247,12 +248,21 @@ def run_pipeline(
     min_words_per_column: int = 10,
     dynamic_min_words: bool = True,
     y_tolerance: float = 1.0,
+    use_histogram_columns: bool = True,
     verbose: bool = True,
 ) -> Tuple[Dict[str, Any], str]:
     """
     Run the resume parsing pipeline:
       PDF -> words -> columns -> column-wise lines -> section segmentation -> contact info -> simple_json.
     Returns (full_result_json, simplified_json_str). Prints simplified JSON fully.
+    
+    Args:
+        pdf_path: Path to PDF file
+        min_words_per_column: Minimum words to consider a column valid
+        dynamic_min_words: Adjust min words based on page size
+        y_tolerance: Vertical tolerance for line grouping
+        use_histogram_columns: Use histogram-based column detection (better for complex layouts)
+        verbose: Print progress messages
     """
     if verbose:
         print(f"PDF: {pdf_path}")
@@ -277,12 +287,23 @@ def run_pipeline(
         using_pymupdf = bool(first_word and ("font" in first_word or "font_size" in first_word))
         print(f"Pages: {len(pages)} | Total words: {total_words} | Extractor: {'PyMuPDF' if using_pymupdf else 'pdfplumber'}")
 
-    # 2) Columns
-    columns = split_columns(
-        pages,
-        min_words_per_column=min_words_per_column,
-        dynamic_min_words=dynamic_min_words,
-    )
+    # 2) Columns - Choose detection method
+    if use_histogram_columns:
+        if verbose:
+            print("Using histogram-based column detection...")
+        columns = detect_columns_with_histogram(
+            pages,
+            min_gap_width=15,
+            smooth_window=7,
+            min_words_per_column=min_words_per_column
+        )
+    else:
+        columns = split_columns(
+            pages,
+            min_words_per_column=min_words_per_column,
+            dynamic_min_words=dynamic_min_words,
+        )
+    
     if verbose:
         print(f"Columns: {len(columns)}")
 
@@ -319,7 +340,7 @@ def run_pipeline(
 
 def main():
     # Static inputs (edit as needed)
-    PDF_PATH = "freshteams_resume/ReactJs/UI_Developer.pdf"
+    PDF_PATH = "freshteams_resume/Resumes/Gaganasri-M-FullStack_1.pdf"
     MIN_WORDS = 10
     DYNAMIC_MIN_WORDS = True
     Y_TOL = 0.5
@@ -347,5 +368,5 @@ def main():
     #     f.write(sim)
 
 
-# if __name__ == "__main__":
-#     main()
+if __name__ == "__main__":
+    main()

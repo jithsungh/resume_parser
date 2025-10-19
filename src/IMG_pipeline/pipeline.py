@@ -19,16 +19,30 @@ def run_pipeline_ocr(
     dynamic_min_words: bool = True,
     y_tolerance: float = 1.0,
     verbose: bool = True,
-    tesseract_cmd: str | None = None,
+    languages: list = None,
+    gpu: bool = False,
 ) -> Tuple[Dict[str, Any], str]:
     """
-    Image-based pipeline using OCR for image or scanned PDFs.
+    Image-based pipeline using OCR (EasyOCR) for image or scanned PDFs.
     Steps: PDF -> raster images -> OCR words -> columns -> lines -> sections -> contact -> simple_json
+    
+    Args:
+        pdf_path: Path to the PDF file
+        dpi: Resolution for rendering PDF pages (default: 300)
+        min_words_per_column: Minimum words required per column
+        dynamic_min_words: Enable dynamic word count adjustment
+        y_tolerance: Vertical tolerance for line grouping
+        verbose: Print progress information
+        languages: List of language codes for EasyOCR (default: ['en'])
+        gpu: Whether to use GPU acceleration (default: False)
     """
+    if languages is None:
+        languages = ['en']
+        
     if verbose:
-        print(f"PDF (OCR): {pdf_path}")
+        print(f"PDF (OCR with EasyOCR): {pdf_path}")
 
-    pages = get_words_from_pdf_ocr(pdf_path, dpi=dpi, tesseract_cmd=tesseract_cmd)
+    pages = get_words_from_pdf_ocr(pdf_path, dpi=dpi, languages=languages, gpu=gpu)
     if not pages:
         if verbose:
             print("No pages extracted (OCR).")
@@ -78,10 +92,11 @@ if __name__ == "__main__":
     parser.add_argument("--no_dynamic_min", action="store_true", help="Disable dynamic min-words per column")
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--save_simple", help="Optional path to write simplified JSON")
-    parser.add_argument("--tesseract_cmd", help="Path to tesseract executable (if not on PATH)")
+    parser.add_argument("--languages", nargs='+', default=['en'], help="Language codes for EasyOCR (e.g., en, es, fr)")
+    parser.add_argument("--gpu", action="store_true", help="Enable GPU acceleration for EasyOCR")
     args = parser.parse_args()
 
-    print(f"Running OCR pipeline on: {args.pdf}")
+    print(f"Running OCR pipeline (EasyOCR) on: {args.pdf}")
 
     res, sim = run_pipeline_ocr(
         args.pdf,
@@ -90,7 +105,8 @@ if __name__ == "__main__":
         dynamic_min_words=not args.no_dynamic_min,
         y_tolerance=args.y_tol,
         verbose=not args.quiet,
-        tesseract_cmd=args.tesseract_cmd,
+        languages=args.languages,
+        gpu=args.gpu,
     )
 
     if args.save_simple:
