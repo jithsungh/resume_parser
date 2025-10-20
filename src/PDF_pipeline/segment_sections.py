@@ -33,7 +33,7 @@ SECTIONS: Dict[str, List[str]] = {
         "summary", "professional summary", "career summary", "profile", "about me",
         "executive summary", "personal profile", "introduction", "career objective",
         "objective", "professional profile", "career overview", "personal statement",
-        "highlights", "overview", "professional synopsis"  # added
+        "highlights", "overview", "professional synopsis" 
     ],
     "Skills": [
         "skills", "key skills", "technical skills", "non technical skills", "nontechnical skills",
@@ -45,7 +45,7 @@ SECTIONS: Dict[str, List[str]] = {
         "technical skills & expertise", "technical skills and expertise", "professional skills & expertise",
         "professional skills and expertise", "it knowledge", "it skills", "it skills & expertise", "it skills and expertise",
         "it skills & tools", "it skills and tools", "it competencies", "skills summary", "skills & expertise",
-        "skills and expertise", "technical skill set"  # added
+        "skills and expertise", "technical skill set"  
     ],
     "Experience": [
         "experience", "current organisation", "current organization", "previous organzations","previous organisations", "job title", "work experience", "work history", "professional experience",
@@ -53,7 +53,6 @@ SECTIONS: Dict[str, List[str]] = {
         "internship experience", "practical experience", "volunteer experience",
         "freelance experience", "project experience", "consulting experience", "military experience",
         "employment", "professional history", "employment details",
-        # added variants / misspellings / composites
         "professional experiance", "experience summary", "company details", "internship",
         "exprofessional experience", "employment profile", "experiance & projects", "experien",
         "experiance and work location"
@@ -65,7 +64,6 @@ SECTIONS: Dict[str, List[str]] = {
         "course projects", "personal projects", "project work", "project experience",
         "project details", "project summary", "notable projects", "significant projects",
         "projects delivered", "projects completed", "projects handled",
-        # added
         "details of the projects worked on", "open source"
     ],
     "Education": [
@@ -75,9 +73,7 @@ SECTIONS: Dict[str, List[str]] = {
         "research and education", "qualifications", "educational details", "educational history",
         "education details", "education history", "educational qualifications", "educational profile",
         "academic qualifications", "academic profile", "education qualifications", "education qualification",
-        # added
-        "academic details", "academic achievements",  # ensure present
-        # composites
+        "academic details", "academic achievements",
         "education & certifications", "education and certifications", "education certifications"
     ],
     "Certifications": [
@@ -85,7 +81,6 @@ SECTIONS: Dict[str, List[str]] = {
         "workshops", "online courses", "continuing education", "special training",
         "technical certifications", "certificates", "awards and certifications", "awards & certifications",
         "courses and certifications", "courses & certifications", "courses & certificates", "courses and certificates",
-        # added
         "certificate"
     ],
     "Achievements": [
@@ -93,7 +88,6 @@ SECTIONS: Dict[str, List[str]] = {
         "milestones", "accomplishments", "notable achievements", "career highlights", "extracurricular activities",
         "extracurricular & achievements", "extracurricular and achievements", "honors & achievements", "honors and achievements",
         "honors & awards", "honors and awards",
-        # added common misspelling
         "extracuricular activities"
     ],
     "Publications": [
@@ -106,7 +100,6 @@ SECTIONS: Dict[str, List[str]] = {
     ],
     "Languages": [
         "languages", "language proficiency", "spoken languages", "language skills",
-        # added
         "languages known", "languages known and other information"
     ],
     "Volunteer": [

@@ -249,6 +249,7 @@ def run_pipeline(
     dynamic_min_words: bool = True,
     y_tolerance: float = 1.0,
     use_histogram_columns: bool = True,
+    use_region_detection: bool = False,
     verbose: bool = True,
 ) -> Tuple[Dict[str, Any], str]:
     """
@@ -262,6 +263,7 @@ def run_pipeline(
         dynamic_min_words: Adjust min words based on page size
         y_tolerance: Vertical tolerance for line grouping
         use_histogram_columns: Use histogram-based column detection (better for complex layouts)
+        use_region_detection: Use region-based detection for hybrid layouts (top: 1 col, bottom: 2 cols)
         verbose: Print progress messages
     """
     if verbose:
@@ -285,10 +287,25 @@ def run_pipeline(
                 first_word = p["words"][0]
                 break
         using_pymupdf = bool(first_word and ("font" in first_word or "font_size" in first_word))
-        print(f"Pages: {len(pages)} | Total words: {total_words} | Extractor: {'PyMuPDF' if using_pymupdf else 'pdfplumber'}")
-
-    # 2) Columns - Choose detection method
-    if use_histogram_columns:
+        print(f"Pages: {len(pages)} | Total words: {total_words} | Extractor: {'PyMuPDF' if using_pymupdf else 'pdfplumber'}")    # 2) Columns - Choose detection method
+    if use_region_detection:
+        # Region-based detection for hybrid layouts
+        if verbose:
+            print("Using region-based layout detection (hybrid layouts)...")
+        from src.PDF_pipeline.region_detector import segment_page_into_regions, get_words_by_region_and_column
+        
+        all_columns = []
+        for page_dict in pages:
+            regions = segment_page_into_regions(page_dict)
+            if verbose:
+                print(f"  Page {page_dict.get('page', 0)}: {len(regions)} region(s)")
+                for idx, region in enumerate(regions):
+                    print(f"    Region {idx+1}: y={region.y_start:.0f}-{region.y_end:.0f}, {region.num_columns} col(s)")
+            page_columns = get_words_by_region_and_column(regions)
+            all_columns.extend(page_columns)
+        columns = all_columns
+    
+    elif use_histogram_columns:
         if verbose:
             print("Using histogram-based column detection...")
         columns = detect_columns_with_histogram(
