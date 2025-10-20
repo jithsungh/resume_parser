@@ -1,3 +1,21 @@
+#!/usr/bin/env python3
+"""
+Web-based Resume Parser Results Viewer
+=======================================
+
+View parsed resume results in a browser with side-by-side comparison.
+
+Usage:
+    python scripts/view_results.py
+    # Then open browser to http://localhost:5000
+"""
+
+import sys
+from pathlib import Path
+
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 import os
 import json
 from pathlib import Path

@@ -8,13 +8,24 @@ error handling, and automatic result aggregation.
 
 import time
 import json
+import re
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from tqdm import tqdm
 
+try:
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    OPENPYXL_AVAILABLE = True
+except ImportError:
+    OPENPYXL_AVAILABLE = False
+
 from src.core.unified_pipeline import UnifiedPipeline
+
+# Filter for Excel-unsafe characters
+ILLEGAL_CHARACTERS_RE = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
 
 
 @dataclass
@@ -366,29 +377,137 @@ class BatchProcessor:
             'avg_time': total_time / len(input_paths) if input_paths else 0
         }
     
-    def _save_to_excel(self, results: List[Dict], output_path: str):
-        """Save results to Excel file."""
-        try:
-            import pandas as pd
-            
-            # Extract data for Excel
-            rows = []
-            for result in results:
-                row = {
-                    'file_name': result['metadata']['file_name'],
-                    'success': result['success'],
-                    'strategy': result.get('strategy', 'unknown'),
-                    'sections': len(result.get('result', {}).get('sections', [])),
-                    'processing_time': result['metadata']['processing_time']
-                }
-                rows.append(row)
-            
-            df = pd.DataFrame(rows)
-            df.to_excel(output_path, index=False)
-        
-        except Exception as e:
-            print(f"Warning: Could not save Excel file: {e}")
+    @staticmethod
+    def _sanitize_cell(value: str) -> str:
+        """Sanitize cell value for Excel compatibility."""
+        if value is None:
+            return ""
+        s = str(value)
+        s = ILLEGAL_CHARACTERS_RE.sub("", s)
+        return s.strip()
     
+    def _save_to_excel(
+        self,
+        results: List[Dict[str, Any]],
+        output_path: str,
+        include_sections: bool = True
+    ):
+        """
+        Save results to Excel file with sections as columns.
+        
+        Args:
+            results: List of processing results
+            output_path: Path to Excel file
+            include_sections: Include individual sections as columns
+        """
+        if not OPENPYXL_AVAILABLE:
+            print("Warning: openpyxl not available. Install with: pip install openpyxl")
+            return
+        
+        # Create workbook
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Resume Data"
+        
+        # Define all potential section names from results
+        all_sections = set()
+        for result in results:
+            if result.get('success') and result.get('result'):
+                sections = result['result'].get('sections', [])
+                for section in sections:
+                    section_name = section.get('section', 'Unknown')
+                    all_sections.add(section_name)
+        
+        # Sort sections for consistent column order
+        section_columns = sorted(all_sections)
+        
+        # Build header row
+        headers = ['File Name', 'Success', 'Strategy', 'Processing Time (s)', 'Total Sections', 'Contact Info']
+        if include_sections:
+            headers.extend(section_columns)
+        
+        # Style header
+        header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+        header_font = Font(color="FFFFFF", bold=True)
+        
+        for col_idx, header in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col_idx, value=header)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal='center', vertical='center')
+        
+        # Add data rows
+        for row_idx, result in enumerate(results, 2):
+            file_name = Path(result['metadata']['file_name']).name
+            success = result.get('success', False)
+            strategy = result.get('strategy', 'unknown')
+            proc_time = result['metadata'].get('processing_time', 0)
+            
+            # Basic columns
+            ws.cell(row=row_idx, column=1, value=self._sanitize_cell(file_name))
+            ws.cell(row=row_idx, column=2, value='✓' if success else '✗')
+            ws.cell(row=row_idx, column=3, value=self._sanitize_cell(strategy))
+            ws.cell(row=row_idx, column=4, value=round(proc_time, 2))
+            
+            if success and result.get('result'):
+                data = result['result']
+                sections = data.get('sections', [])
+                
+                # Total sections count
+                ws.cell(row=row_idx, column=5, value=len(sections))
+                
+                # Contact info (as JSON string)
+                contact = data.get('contact', {})
+                contact_str = json.dumps(contact, ensure_ascii=False) if contact else ''
+                ws.cell(row=row_idx, column=6, value=self._sanitize_cell(contact_str))
+                
+                if include_sections:
+                    # Create a map of section name to content
+                    section_map = {}
+                    for section in sections:
+                        section_name = section.get('section', 'Unknown')
+                        lines = section.get('lines', [])
+                        # Join lines into single text
+                        content = '\n'.join(str(line) for line in lines if line)
+                        section_map[section_name] = content
+                    
+                    # Fill section columns
+                    for col_idx, section_name in enumerate(section_columns, 7):
+                        content = section_map.get(section_name, '')
+                        ws.cell(row=row_idx, column=col_idx, value=self._sanitize_cell(content))
+            else:
+                # Failed processing
+                ws.cell(row=row_idx, column=5, value=0)
+                error_msg = result['metadata'].get('error', 'Unknown error')
+                ws.cell(row=row_idx, column=6, value=self._sanitize_cell(f"Error: {error_msg}"))
+        
+        # Auto-adjust column widths
+        for column in ws.columns:
+            max_length = 0
+            column_letter = column[0].column_letter
+            
+            for cell in column:
+                try:
+                    if cell.value:
+                        cell_length = len(str(cell.value))
+                        if cell_length > max_length:
+                            max_length = cell_length
+                except:
+                    pass
+            
+            # Set width (max 50 for readability)
+            adjusted_width = min(max_length + 2, 50)
+            ws.column_dimensions[column_letter].width = adjusted_width
+        
+        # Freeze first row
+        ws.freeze_panes = 'A2'
+        
+        # Save workbook
+        wb.save(output_path)
+        
+        if self.verbose:
+            print(f"  Excel file saved: {output_path}")
+
     def _process_single(self, file_path: str) -> Dict[str, Any]:
         """Process a single file."""
         return self.pipeline.parse(file_path)

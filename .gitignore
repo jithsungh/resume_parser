@@ -1,6 +1,60 @@
-.venv
-freshteams_resume/
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
 
-outputs/
+# Virtual Environment
+venv/
+ENV/
+env/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Project specific
+outputs/*.xlsx
+outputs/*.json
+!outputs/.gitkeep
+freshteams_resume/
+*.pdf
+*.docx
+*.doc
+
+# Training data (large files)
+train_original.json
+validation_original.json
+
+# Temporary files
+*.tmp
+*.log
+.cache/
+
+# Excel temporary files
+~$*.xlsx
+~$*.xls
+
+# Config overrides (keep default)
+config/sections_database.local.json

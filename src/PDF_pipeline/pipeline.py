@@ -385,5 +385,5 @@ def main():
     #     f.write(sim)
 
 
-if __name__ == "__main__":
-    main()
+# if __name__ == "__main__":
+#     main()

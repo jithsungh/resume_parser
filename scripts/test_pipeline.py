@@ -2,11 +2,17 @@
 """
 Quick test script to verify the complete pipeline works.
 Tests single file parsing and batch processing.
+
+Usage:
+    python scripts/test_pipeline.py
 """
 
 import sys
 import json
 from pathlib import Path
+
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 def test_single_resume():
     """Test parsing a single resume."""
@@ -50,7 +56,7 @@ def test_batch_processing():
     from src.core.batch_processor import BatchProcessor
     
     test_folder = "freshteams_resume/Resumes"
-    output_file = "test_batch_output.xlsx"
+    output_file = "outputs/test_batch_output.xlsx"
     
     if not Path(test_folder).exists():
         print(f"❌ Test folder not found: {test_folder}")
@@ -81,8 +87,9 @@ def test_batch_processing():
     
     # Cleanup
     if Path(output_file).exists():
-        Path(output_file).unlink()
-        print(f"  (cleaned up test file)")
+        print(f"  ✓ Excel file created successfully")
+        # Don't delete for inspection
+        # Path(output_file).unlink()
     
     return results['successful'] > 0
 
