@@ -46,6 +46,7 @@ freshteams_resume/
 # Training data (large files)
 train_original.json
 validation_original.json
+ml_model/
 
 # Temporary files
 *.tmp
