@@ -358,11 +358,39 @@ class ResumeParserService:
                     if progress_callback:
                         progress_callback(idx + 1, len(file_info))
                     continue
-                
-                # Segment the resume
+                  # Segment the resume using proper PDF pipeline with layout analysis
                 loop = asyncio.get_event_loop()
                 
-                if self.section_splitter:
+                # For PDFs, use the advanced PDF pipeline for accurate segmentation
+                if file_ext == '.pdf':
+                    from ..PDF_pipeline.get_words import get_words_from_pdf
+                    from ..PDF_pipeline.split_columns import split_columns
+                    from ..PDF_pipeline.get_lines import get_column_wise_lines
+                    from ..PDF_pipeline.segment_sections import segment_sections_from_columns
+                    
+                    # Extract with layout analysis
+                    def segment_pdf_with_layout(pdf_path):
+                        pages = get_words_from_pdf(pdf_path)
+                        columns = split_columns(pages, min_words_per_column=10, dynamic_min_words=True)
+                        columns_with_lines = get_column_wise_lines(columns, y_tolerance=1.0)
+                        result = segment_sections_from_columns(columns_with_lines)
+                        
+                        # Convert to dict format
+                        segments = {}
+                        for section in result.get('sections', []):
+                            section_name = section.get('section', 'Unknown')
+                            lines = section.get('lines', [])
+                            content = '\n'.join(line.get('text', '') for line in lines)
+                            segments[section_name] = content
+                        return segments
+                    
+                    segments = await loop.run_in_executor(
+                        self._executor,
+                        segment_pdf_with_layout,
+                        file_path
+                    )
+                elif self.section_splitter:
+                    # For text/DOCX, use text-based segmentation
                     segments = await loop.run_in_executor(
                         self._executor,
                         self.section_splitter.split_sections,
