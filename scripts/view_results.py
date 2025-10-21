@@ -28,13 +28,13 @@ from src.PDF_pipeline.segment_sections import SECTIONS
 
 # Config
 # Default Excel file name as requested. Fallback to outputs/batch_sections.xlsx if missing.
-DEFAULT_XLSX = "batch_selection_8.xlsx"
-FALLBACK_XLSX = "outputs/batch_sections_8.xlsx"
-ALSO_TRY_XLSX = "batch_sections_8.xlsx"  # batch writer default name
+DEFAULT_XLSX = "outputs/batch_results.xlsx"
+FALLBACK_XLSX = "outputs/batch_results.xlsx"
+ALSO_TRY_XLSX = "outputs/batch_results.xlsx"  # batch writer default name
 
-# Resolve project root (this file is in project root)
-ROOT_DIR = Path(__file__).resolve().parent
-INDEX_HTML = ROOT_DIR / "index.html"
+# Resolve project root (this file is in scripts/ folder, so go up one level)
+ROOT_DIR = Path(__file__).resolve().parent.parent
+INDEX_HTML = Path(__file__).resolve().parent / "index.html"
 
 def _windows_to_wsl_path(s: str) -> Path:
     """
@@ -90,42 +90,46 @@ def _load_rows_from_excel(xlsx_path: Path) -> List[Dict[str, Any]]:
         return []
 
     header = [str(h or "").strip() for h in rows[0]]
-    data_rows = rows[1:]
-
-    # Identify canonical section columns from header, falling back to SECTIONS keys
-    canonical_list = list(SECTIONS.keys())
+    data_rows = rows[1:]    # Identify section columns from header
     cols = {name: idx for idx, name in enumerate(header)}
 
-    required_cols = ["pdf_path", "contact_info"]
-    for r in required_cols:
-        if r not in cols:
-            raise ValueError(f"Missing required column '{r}' in Excel header: {header}")
-
-    # Any remaining columns treat as section columns; prefer known canonical order if present
-    section_cols_in_sheet = [h for h in header if h not in required_cols]
-    # Keep order by canonical_list
-    ordered_sections = [s for s in canonical_list if s in section_cols_in_sheet]
-    # Add any extra unknown columns at the end
-    ordered_sections += [h for h in section_cols_in_sheet if h not in ordered_sections]
+    # Required column
+    if "pdf_path" not in cols:
+        raise ValueError(f"Missing required column 'pdf_path' in Excel header: {header}")    # Any columns after pdf_path and File Name are section columns
+    section_cols_in_sheet = [h for h in header if h not in ["pdf_path", "File Name"]]
+    ordered_sections = section_cols_in_sheet  # Keep order as in Excel
 
     items: List[Dict[str, Any]] = []
     for i, r in enumerate(data_rows):
         if r is None:
             continue
+        
         pdf_path = (r[cols["pdf_path"]] or "").strip() if len(r) > cols["pdf_path"] else ""
         if not pdf_path:
             continue
-        contact_raw = (r[cols["contact_info"]] or "") if len(r) > cols["contact_info"] else ""
+        
+        # Parse contact info from "Contact Information" section if available
         contact: Dict[str, Any] = {}
-        if isinstance(contact_raw, str) and contact_raw.strip():
-            try:
-                contact = json.loads(contact_raw)
-                if not isinstance(contact, dict):
-                    contact = {"raw": contact_raw}
-            except Exception:
-                contact = {"raw": str(contact_raw)}
-        elif isinstance(contact_raw, dict):
-            contact = contact_raw
+        contact_info_idx = cols.get("Contact Information")
+        if contact_info_idx is not None and len(r) > contact_info_idx:
+            contact_raw = r[contact_info_idx] or ""
+            if isinstance(contact_raw, str) and contact_raw.strip():
+                # Parse contact lines to extract structured info
+                lines = contact_raw.split('\n')
+                for line in lines:
+                    line = line.strip()
+                    if '@' in line:
+                        contact['email'] = line
+                    elif any(c.isdigit() for c in line) and len(line) > 8:
+                        if 'phone' not in contact:
+                            contact['phone'] = line
+                    elif 'linkedin.com' in line.lower():
+                        contact['linkedin'] = line
+                    elif 'github.com' in line.lower():
+                        contact['github'] = line
+                    elif not contact.get('name') and len(line.split()) <= 4:
+                        # First short line might be name
+                        contact['name'] = line
 
         sections: Dict[str, Any] = {}
         for sec in ordered_sections:

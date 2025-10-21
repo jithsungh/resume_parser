@@ -131,8 +131,43 @@ def get_single_column_from_docx(docx_path: str) -> List[Dict[str, Any]]:
     """
     For DOCX, treat the document as a single column per page sequence.
     Returns a columns-with-lines list compatible with PDF pipeline downstream.
+    
+    Raises:
+        RuntimeError: If python-docx is not installed
+        FileNotFoundError: If file doesn't exist
+        Exception: For other parsing errors
     """
-    lines = read_docx_paragraphs(docx_path)
+    from pathlib import Path
+    
+    # Validate file exists
+    if not Path(docx_path).exists():
+        raise FileNotFoundError(f"DOCX file not found: {docx_path}")
+    
+    # Validate file is readable
+    try:
+        with open(docx_path, 'rb') as f:
+            # Read first few bytes to verify it's a valid file
+            header = f.read(4)
+            if not header:
+                raise ValueError(f"Empty file: {docx_path}")
+    except PermissionError:
+        raise PermissionError(f"Permission denied reading file: {docx_path}")
+    except Exception as e:
+        raise RuntimeError(f"Cannot read file {docx_path}: {e}") from e
+    
+    try:
+        lines = read_docx_paragraphs(docx_path)
+    except RuntimeError:
+        # Re-raise if python-docx not installed
+        raise
+    except Exception as e:
+        # Wrap with context
+        raise RuntimeError(f"Failed to parse DOCX paragraphs from {docx_path}: {e}") from e
+    
+    if not lines:
+        # Return empty structure rather than failing - some docs might be legitimately empty
+        lines = []
+    
     col = {
         "page": 0,
         "column_index": 0,

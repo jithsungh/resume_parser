@@ -74,7 +74,7 @@ def run_pipeline_ocr(
     result["contact"] = contact
 
     sim = simple_json(result)
-    print(sim)
+    # print(sim)
 
     return result, sim
 

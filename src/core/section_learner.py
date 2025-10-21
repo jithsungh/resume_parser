@@ -455,7 +455,6 @@ class SectionLearner:
         
         # Likely a section header
         return True
-    
     def _add_section_variant(self, section_name: str, variant: str) -> bool:
         """
         Add a new variant to an existing section.
@@ -480,6 +479,10 @@ class SectionLearner:
         
         # Add the variant
         self.config['sections'][section_name]['variants'].append(variant_lower)
+        
+        # Save immediately so learning persists
+        self._save_config()
+        
         return True
     
     @property

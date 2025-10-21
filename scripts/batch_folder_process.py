@@ -135,9 +135,8 @@ def save_to_excel(results: List[Dict[str, Any]], output_path: str):
         "Declarations",
         "Unknown Sections"
     ]
-    
-    # Header row - just file name and sections
-    headers = ["File Name"] + standard_sections
+      # Header row - pdf_path (for web viewer), file name, and sections
+    headers = ["pdf_path", "File Name"] + standard_sections
     ws.append(headers)
     
     # Style header
@@ -148,35 +147,73 @@ def save_to_excel(results: List[Dict[str, Any]], output_path: str):
         cell.fill = header_fill
         cell.font = header_font
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    
-    # Data rows
+      # Data rows
     for result in results:
         if not result.get('success'):
             # Failed processing - just show error
+            pdf_path = sanitize_cell(result['metadata'].get('file_path', ''))
             file_name = result['metadata'].get('file_name', 'Unknown')
             error_msg = result['metadata'].get('error', 'Unknown error')
-            row = [sanitize_cell(file_name)] + [sanitize_cell(f"ERROR: {error_msg}")] + [""] * (len(standard_sections) - 1)
+            row = [sanitize_cell(pdf_path), sanitize_cell(file_name)] + [sanitize_cell(f"ERROR: {error_msg}")] + [""] * (len(standard_sections) - 1)
             ws.append(row)
             continue
         
         metadata = result.get('metadata', {})
         parsed_data = result.get('result', {})
         sections_data = parsed_data.get('sections', [])
-        
-        # Just the file name (no path)
+          # Get pdf_path (full path for web viewer) and file name
+        pdf_path = sanitize_cell(metadata.get('file_path', ''))
         file_name = sanitize_cell(metadata.get('file_name', ''))
-        
-        # Create a map of section name to content
+          # Create a map of section name to content
         section_map = {}
         for section in sections_data:
             section_name = section.get('section', '')
             lines = section.get('lines', [])
+            
+            # Clean up lines - remove any dict/metadata formatting
+            clean_lines = []
+            for line in lines:
+                if not line:
+                    continue
+                
+                # Extract text from line object if it's a dict
+                if isinstance(line, dict):
+                    line_str = str(line.get('text', '')).strip()
+                else:
+                    line_str = str(line).strip()
+                
+                if not line_str:
+                    continue
+                
+                # Skip lines that look like metadata (dict format, JSON, etc.)
+                if line_str.startswith('{') and line_str.endswith('}'):
+                    # Try to parse as JSON and extract values
+                    try:
+                        import json
+                        data = json.loads(line_str)
+                        if isinstance(data, dict):
+                            # Extract only the values, not the keys
+                            for key, value in data.items():
+                                if value and str(value).strip():
+                                    clean_lines.append(str(value).strip())
+                            continue
+                    except:
+                        pass
+                
+                # Skip lines with metadata markers
+                if any(marker in line_str for marker in ['◆', '❖', '✦', '⚬']):
+                    # Remove the markers
+                    line_str = line_str.replace('◆', '').replace('❖', '').replace('✦', '').replace('⚬', '').strip()
+                
+                if line_str:
+                    clean_lines.append(line_str)
+            
             # Join lines with newline for better readability in Excel
-            content = '\n'.join(str(line) for line in lines if line)
+            content = '\n'.join(clean_lines)
             section_map[section_name] = content
         
-        # Build row: file name + section contents
-        row = [file_name]
+        # Build row: pdf_path + file name + section contents
+        row = [pdf_path, file_name]
         for section_name in standard_sections:
             content = section_map.get(section_name, '')
             row.append(sanitize_cell(content))
@@ -186,15 +223,18 @@ def save_to_excel(results: List[Dict[str, Any]], output_path: str):
         # Enable text wrapping for content cells
         for cell in ws[ws.max_row]:
             cell.alignment = Alignment(vertical="top", wrap_text=True)
-    
-    # Set column widths
-    ws.column_dimensions['A'].width = 35  # File name column
-    for col_idx in range(2, len(headers) + 1):
+      # Set column widths
+    ws.column_dimensions['A'].width = 50  # pdf_path column (hidden but needed for web viewer)
+    ws.column_dimensions['B'].width = 30  # File name column
+    for col_idx in range(3, len(headers) + 1):
         col_letter = ws.cell(1, col_idx).column_letter
         ws.column_dimensions[col_letter].width = 45  # Section columns
     
-    # Freeze first row and first column
-    ws.freeze_panes = 'B2'
+    # Hide pdf_path column (keep it for web viewer but hide from users)
+    ws.column_dimensions['A'].hidden = True
+    
+    # Freeze first row and second column (File Name)
+    ws.freeze_panes = 'C2'
     
     # Save workbook
     wb.save(output_path)
@@ -236,8 +276,7 @@ def process_folder(
     if verbose:
         print(f"\n📄 Found {len(file_paths)} files")
         print(f"   Workers: {max_workers}")
-    
-    # Initialize pipeline
+      # Initialize pipeline with verbose=False to suppress section output
     pipeline = UnifiedPipeline(enable_learning=True, verbose=False)
     
     # Process files in parallel
@@ -245,6 +284,7 @@ def process_folder(
     
     if verbose:
         print(f"\n⚙️  Processing resumes...")
+        print(f"   Note: Section details hidden for clean output. Check Excel for results.")
     
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         # Submit all tasks

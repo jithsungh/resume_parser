@@ -282,8 +282,7 @@ class UnifiedPipeline:
                 parsed, _ = run_pipeline_ocr(
                     pdf_path=file_path,
                     dpi=300,
-                    languages=['en'],
-                    verbose=False,
+                    languages=['en'],                    verbose=False,
                     gpu=False
                 )
                 
@@ -309,6 +308,19 @@ class UnifiedPipeline:
                     'duration': time.time() - start_time
                 }
             
+            elif strategy == 'docx':
+                from src.DOCX_pipeline.pipeline import run_pipeline
+                parsed, _ = run_pipeline(                    docx_path=file_path,
+                    verbose=False
+                )
+                
+                return {
+                    'success': True,
+                    'data': parsed,
+                    'strategy': 'docx',
+                    'duration': time.time() - start_time
+                }
+            
             else:
                 return {
                     'success': False,
@@ -319,7 +331,8 @@ class UnifiedPipeline:
         except Exception as e:
             return {
                 'success': False,
-                'error': str(e),                'duration': time.time() - start_time
+                'error': str(e),
+                'duration': time.time() - start_time
             }
     
     def _try_fallbacks(
@@ -339,6 +352,9 @@ class UnifiedPipeline:
             fallbacks = ['pdf', 'ocr']
         elif failed_strategy == 'ocr':
             fallbacks = ['pdf', 'region']
+        elif failed_strategy == 'docx':
+            # If DOCX parsing fails, no real fallback (could try OCR on converted image)
+            fallbacks = []
         else:
             fallbacks = ['pdf', 'ocr']
         

@@ -626,14 +626,14 @@ def segment_sections_from_columns(columns_with_lines: List[Dict[str, Any]]) -> D
     }
 
     # Print simplified JSON as requested (full print, not a glimpse)
-    printable = [
-        {
-            "section": sec["section"],
-            "lines": [ln.get("text", "") for ln in sec["lines"]]
-        }
-        for sec in merged
-    ]
-    print(json.dumps(printable, ensure_ascii=False, indent=2))
+    # printable = [
+    #     {
+    #         "section": sec["section"],
+    #         "lines": [ln.get("text", "") for ln in sec["lines"]]
+    #     }
+    #     for sec in merged
+    # ]
+    # print(json.dumps(printable, ensure_ascii=False, indent=2))
 
     return result
 

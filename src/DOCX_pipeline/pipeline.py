@@ -214,29 +214,56 @@ def run_pipeline(docx_path: str, *, verbose: bool = True) -> Tuple[Dict[str, Any
       DOCX -> lines (single column) -> section segmentation -> contact info -> simple_json.
     Returns (full_result_json, simplified_json_str). Prints simplified JSON fully.
     Output format matches src/PDF_pipeline/pipeline.run_pipeline output.
+    
+    Raises:
+        RuntimeError: If python-docx is not installed
+        FileNotFoundError: If DOCX file doesn't exist
+        Exception: For other parsing errors
     """
     if verbose:
         print(f"DOCX: {docx_path}")
+    
+    # Validate file exists
+    from pathlib import Path
+    if not Path(docx_path).exists():
+        raise FileNotFoundError(f"DOCX file not found: {docx_path}")
+    
+    # Validate file extension
+    suffix = Path(docx_path).suffix.lower()
+    if suffix not in ['.docx', '.doc']:
+        raise ValueError(f"Invalid file type: {suffix}. Expected .docx or .doc")
 
-    columns_with_lines = get_single_column_from_docx(docx_path)
+    try:
+        columns_with_lines = get_single_column_from_docx(docx_path)
+    except RuntimeError as e:
+        # Re-raise if python-docx is not installed
+        raise
+    except Exception as e:
+        # Wrap other errors with context
+        raise RuntimeError(f"Failed to extract lines from DOCX: {e}") from e
+    
+    if not columns_with_lines:
+        raise ValueError("No content extracted from DOCX file")
+    
     if verbose:
         line_count = sum(len(c.get("lines", [])) for c in columns_with_lines)
         print(f"Total lines: {line_count}")
         print("Starting section segmentation...")
 
     result = segment_sections_from_columns(columns_with_lines)
-
+    
     if verbose:
         sec_cnt = len(result.get("sections", []) or [])
         lines_total = result.get("meta", {}).get("lines_total", 0)
         print(f"Segmentation done. Sections: {sec_cnt}, total lines in sections: {lines_total}")
         print("Extracting contact info...")
-
+    
     contact = extract_contact_info_from_lines(columns_with_lines)
     result["contact"] = contact
 
     sim = simple_json(result)
-    print(sim)
+    if verbose:
+        print(sim)
     return result, sim
 
 

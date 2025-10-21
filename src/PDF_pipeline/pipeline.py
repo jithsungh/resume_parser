@@ -250,7 +250,7 @@ def run_pipeline(
     y_tolerance: float = 1.0,
     use_histogram_columns: bool = True,
     use_region_detection: bool = False,
-    verbose: bool = True,
+    verbose: bool = False,
 ) -> Tuple[Dict[str, Any], str]:
     """
     Run the resume parsing pipeline:
@@ -339,18 +339,17 @@ def run_pipeline(
                 if shown >= 5:
                     break
             if shown >= 5:
-                break
-
-    # 4) Sections (prints simplified JSON internally as well)
+                break    # 4) Sections (prints simplified JSON internally as well)
     result = segment_sections_from_columns(columns_with_lines)
 
     # 5) Contact info (regex-based)
     contact = extract_contact_info_from_lines(columns_with_lines)
     result["contact"] = contact
 
-    # 6) Simplified JSON (print fully for the caller too)
+    # 6) Simplified JSON (only print if verbose)
     sim = simple_json(result)
-    print(sim)
+    if verbose:
+        print(sim)
 
     return result, sim
 
