@@ -163,6 +163,230 @@ def identify_columns_in_page(words, page_width, min_words_per_column=10, dynamic
 
     return valid
 
+def split_columns_by_multi_section_header(
+    words,
+    page_width,
+    multi_section_line,
+    min_words_per_column=5
+):
+    """
+    Split words into columns based on a multi-section header line.
+    
+    This function analyzes the X-coordinates of section headers that appear
+    on the same line (e.g., "EXPERIENCE    SKILLS") and uses those positions
+    to split the page into columns.
+    
+    Args:
+        words: List of word dictionaries with x0, x1, top, text
+        page_width: Width of the page in PDF coordinates
+        multi_section_line: Dict with 'text', 'boundaries', 'multi_sections', etc.
+        min_words_per_column: Minimum words required for a valid column
+        
+    Returns:
+        List of column dictionaries, each with column_index, x_start, x_end, words
+    """
+    if not words or not multi_section_line:
+        return []
+    
+    # Extract multi-section information
+    multi_sections = multi_section_line.get('multi_sections', [])
+    if len(multi_sections) < 2:
+        # Not a multi-section header, fall back to standard column detection
+        return identify_columns_in_page(words, page_width, min_words_per_column)
+    
+    # Get the full text of the header line
+    header_text = multi_section_line.get('text', '')
+    
+    # Parse the boundaries to get X-coordinates
+    boundaries = multi_section_line.get('boundaries', {})
+    header_x0 = boundaries.get('x0', 0)
+    header_x1 = boundaries.get('x1', page_width)
+    header_width = header_x1 - header_x0
+    
+    # Strategy: Find where each section name appears in the header text
+    # and map that to X-coordinate ranges
+    section_positions = []
+    
+    for i, section_name in enumerate(multi_sections):
+        # Find position in text (case-insensitive)
+        text_lower = header_text.lower()
+        section_lower = section_name.lower()
+        
+        # Try to find the section name in the header
+        pos = text_lower.find(section_lower)
+        
+        if pos == -1:
+            # Try finding any variant of the section name
+            # This handles cases like "WORK EXPERIENCE" when section is "Experience"
+            words_in_section = section_lower.split()
+            for word in words_in_section:
+                if len(word) > 3:  # Skip short words
+                    pos = text_lower.find(word)
+                    if pos != -1:
+                        break
+        
+        if pos != -1:
+            # Calculate approximate X position based on character position
+            char_ratio = pos / len(header_text) if len(header_text) > 0 else 0
+            approx_x = header_x0 + (char_ratio * header_width)
+            
+            section_positions.append({
+                'section': section_name,
+                'text_pos': pos,
+                'approx_x': approx_x,
+                'index': i
+            })
+    
+    # Sort by X position
+    section_positions.sort(key=lambda x: x['approx_x'])
+    
+    if len(section_positions) < 2:
+        # Couldn't determine positions, fall back
+        return identify_columns_in_page(words, page_width, min_words_per_column)
+    
+    # Define column boundaries based on section positions
+    # Strategy: Split at midpoints between sections
+    columns = []
+    
+    for i in range(len(section_positions)):
+        if i == 0:
+            # First column: from start to midpoint to next section
+            x_start = 0
+            if i + 1 < len(section_positions):
+                x_end = (section_positions[i]['approx_x'] + section_positions[i + 1]['approx_x']) / 2
+            else:
+                x_end = page_width
+        elif i == len(section_positions) - 1:
+            # Last column: from midpoint to end
+            x_start = (section_positions[i - 1]['approx_x'] + section_positions[i]['approx_x']) / 2
+            x_end = page_width
+        else:
+            # Middle column: midpoint to midpoint
+            x_start = (section_positions[i - 1]['approx_x'] + section_positions[i]['approx_x']) / 2
+            x_end = (section_positions[i]['approx_x'] + section_positions[i + 1]['approx_x']) / 2
+        
+        # Assign words to this column
+        col_words = []
+        for word in words:
+            word_center = (word['x0'] + word['x1']) / 2
+            if x_start <= word_center <= x_end:
+                col_words.append(word)
+        
+        if len(col_words) >= min_words_per_column:
+            col_words.sort(key=lambda w: (w['top'], w['x0']))
+            
+            # Tighten bounds to actual words
+            if col_words:
+                actual_x_start = min(w['x0'] for w in col_words)
+                actual_x_end = max(w['x1'] for w in col_words)
+            else:
+                actual_x_start = x_start
+                actual_x_end = x_end
+            
+            columns.append({
+                'column_index': i,
+                'x_start': int(actual_x_start),
+                'x_end': int(actual_x_end),
+                'width': int(actual_x_end - actual_x_start + 1),
+                'words': col_words,
+                'section_hint': section_positions[i]['section']  # Hint for section detection
+            })
+    
+    # If no valid columns found, fall back
+    if not columns:
+        return identify_columns_in_page(words, page_width, min_words_per_column)
+    
+    # Reindex columns
+    for idx, col in enumerate(columns):
+        col['column_index'] = idx
+    
+    return columns
+
+
+def refine_columns_with_word_clustering(words, page_width, initial_columns):
+    """
+    Refine column boundaries using word clustering analysis.
+    
+    This is useful when the initial column detection (gap-based or multi-section)
+    needs fine-tuning based on actual word distribution.
+    
+    Args:
+        words: List of all words on the page
+        page_width: Width of the page
+        initial_columns: Initial column boundaries from other methods
+        
+    Returns:
+        Refined list of columns
+    """
+    if not initial_columns or len(initial_columns) == 1:
+        return initial_columns
+    
+    # Analyze X-coordinate distribution of words
+    x_centers = [((w['x0'] + w['x1']) / 2) for w in words]
+    
+    if not x_centers:
+        return initial_columns
+    
+    # For each column, check if word distribution is consistent
+    refined_columns = []
+    
+    for col in initial_columns:
+        col_words = col['words']
+        if not col_words:
+            continue
+        
+        # Calculate density profile within this column
+        col_x_centers = [((w['x0'] + w['x1']) / 2) for w in col_words]
+        
+        # Check for bimodal distribution (indicates column should be split)
+        # Simple check: are words clustered in two distinct regions?
+        col_x_centers.sort()
+        
+        if len(col_x_centers) >= 20:  # Only try splitting if enough words
+            # Find largest gap in X distribution
+            gaps = []
+            for i in range(1, len(col_x_centers)):
+                gap = col_x_centers[i] - col_x_centers[i-1]
+                gaps.append((gap, col_x_centers[i-1], col_x_centers[i]))
+            
+            if gaps:
+                max_gap = max(gaps, key=lambda x: x[0])
+                
+                # If gap is significant (> 10% of column width), consider splitting
+                if max_gap[0] > (col['x_end'] - col['x_start']) * 0.1:
+                    # Split column at this gap
+                    split_point = (max_gap[1] + max_gap[2]) / 2
+                    
+                    left_words = [w for w in col_words if (w['x0'] + w['x1'])/2 < split_point]
+                    right_words = [w for w in col_words if (w['x0'] + w['x1'])/2 >= split_point]
+                    
+                    if len(left_words) >= 5 and len(right_words) >= 5:
+                        # Valid split
+                        refined_columns.append({
+                            'column_index': len(refined_columns),
+                            'x_start': min(w['x0'] for w in left_words),
+                            'x_end': max(w['x1'] for w in left_words),
+                            'width': max(w['x1'] for w in left_words) - min(w['x0'] for w in left_words),
+                            'words': sorted(left_words, key=lambda w: (w['top'], w['x0']))
+                        })
+                        refined_columns.append({
+                            'column_index': len(refined_columns),
+                            'x_start': min(w['x0'] for w in right_words),
+                            'x_end': max(w['x1'] for w in right_words),
+                            'width': max(w['x1'] for w in right_words) - min(w['x0'] for w in right_words),
+                            'words': sorted(right_words, key=lambda w: (w['top'], w['x0']))
+                        })
+                        continue
+        
+        # No split needed, keep original column
+        refined_columns.append(col)
+    
+    # Reindex
+    for idx, col in enumerate(refined_columns):
+        col['column_index'] = idx
+    
+    return refined_columns
+
 def get_global_columns(all_columns):
     """
     Identify global column structure across all pages.

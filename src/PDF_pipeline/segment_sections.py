@@ -12,6 +12,28 @@ except ImportError:
     _SECTION_SPLITTER_AVAILABLE = False
     print("[WARNING] Section splitter not available, multi-section headers may not be detected")
 
+# Import section learner for auto-learning
+try:
+    from src.core.section_learner import SectionLearner
+    _SECTION_LEARNER_AVAILABLE = True
+    _section_learner_instance = None
+except ImportError:
+    _SECTION_LEARNER_AVAILABLE = False
+    print("[WARNING] Section learner not available, auto-learning disabled")
+
+def _get_section_learner():
+    """Get singleton section learner instance"""
+    global _section_learner_instance
+    if _section_learner_instance is None and _SECTION_LEARNER_AVAILABLE:
+        try:
+            config_path = Path(__file__).parent.parent.parent / "config" / "sections_database.json"
+            _section_learner_instance = SectionLearner(str(config_path))
+            _section_learner_instance.verbose = _SEG_DEBUG
+        except Exception as e:
+            if _SEG_DEBUG:
+                print(f"[segment] Could not initialize section learner: {e}")
+    return _section_learner_instance
+
 # Input to this module:
 # - columns_with_lines: output of get_lines.get_column_wise_lines(...)
 #   Each column dict contains:
@@ -509,17 +531,218 @@ def _is_unknown_heading(line: Dict[str, Any], col_stats: Dict[str, float]) -> bo
     return False
 
 
+# ---------------- Column Re-splitting for Multi-Section Headers ----------------
+
+def _resplit_columns_for_multi_sections(columns_with_lines: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Detect multi-section headers and re-split columns accordingly.
+    
+    When a line contains multiple section headers (e.g., "EXPERIENCE    SKILLS"),
+    this function splits the page/column into separate columns so each section
+    can be processed independently.
+    
+    Args:
+        columns_with_lines: Original columns from get_lines.get_column_wise_lines()
+        
+    Returns:
+        Re-split columns (may have more columns than input if multi-sections found)
+    """
+    if not _SECTION_SPLITTER_AVAILABLE:
+        return columns_with_lines
+    
+    from src.PDF_pipeline.split_columns import split_columns_by_multi_section_header
+    
+    # Group columns by page for processing
+    pages_map = {}
+    for col in columns_with_lines:
+        page_no = col.get('page', 0)
+        if page_no not in pages_map:
+            pages_map[page_no] = []
+        pages_map[page_no].append(col)
+    
+    result_columns = []
+    splitter = get_section_splitter()
+    
+    for page_no, page_cols in sorted(pages_map.items()):
+        # Check each column for multi-section headers
+        multi_section_found = False
+        multi_section_line = None
+        
+        for col in page_cols:
+            lines = col.get('lines', [])
+            
+            for line in lines:
+                text = line.get('text', '').strip()
+                
+                if not text or len(text) < 10:
+                    continue
+                
+                # Check if this line has multi-section header
+                try:
+                    multi_sections = splitter.detect_multi_section_header(text)
+                    
+                    if len(multi_sections) >= 2:
+                        if _SEG_DEBUG:
+                            section_names = [s[0] for s in multi_sections]
+                            print(f"[resplit] Multi-section header found on page {page_no}: '{text}' -> {section_names}")
+                        
+                        multi_section_found = True
+                        multi_section_line = {
+                            'text': text,
+                            'boundaries': line.get('boundaries', {}),
+                            'multi_sections': [s[0] for s in multi_sections]
+                        }
+                        break
+                except Exception as e:
+                    if _SEG_DEBUG:
+                        print(f"[resplit] Error checking multi-section: {e}")
+            
+            if multi_section_found:
+                break
+        
+        if multi_section_found and multi_section_line:
+            # Need to re-split this page
+            if _SEG_DEBUG:
+                print(f"[resplit] Re-splitting page {page_no} based on multi-section header")
+            
+            # Collect all words from this page
+            all_words = []
+            page_width = 595  # Default PDF width
+            
+            for col in page_cols:
+                words = col.get('words', [])
+                all_words.extend(words)
+                # Get page width from first column
+                if 'width' in col:
+                    page_width = col.get('x_end', 595)
+            
+            if not all_words:
+                # No words, keep original columns
+                result_columns.extend(page_cols)
+                continue
+            
+            # Re-split columns based on multi-section positions
+            try:
+                new_columns = split_columns_by_multi_section_header(
+                    words=all_words,
+                    page_width=page_width,
+                    multi_section_line=multi_section_line,
+                    min_words_per_column=5
+                )
+                
+                if new_columns and len(new_columns) >= 2:
+                    if _SEG_DEBUG:
+                        print(f"[resplit] Split page {page_no} into {len(new_columns)} columns")
+                    
+                    # Now we need to rebuild lines for each new column
+                    from src.PDF_pipeline.get_lines import get_column_wise_lines_from_words
+                    
+                    # Process each new column
+                    for new_col in new_columns:
+                        new_col['page'] = page_no
+                        
+                        # Generate lines from words
+                        col_words = new_col.get('words', [])
+                        
+                        # Group words into lines (simple approach: by Y-coordinate)
+                        lines_dict = {}
+                        for word in col_words:
+                            y = int(word.get('top', 0))
+                            if y not in lines_dict:
+                                lines_dict[y] = []
+                            lines_dict[y].append(word)
+                        
+                        # Build line objects
+                        lines = []
+                        for line_idx, (y, words_in_line) in enumerate(sorted(lines_dict.items())):
+                            words_in_line.sort(key=lambda w: w.get('x0', 0))
+                            
+                            line_text = ' '.join(w.get('text', '') for w in words_in_line)
+                            
+                            # Calculate boundaries
+                            x0 = min(w.get('x0', 0) for w in words_in_line)
+                            x1 = max(w.get('x1', 0) for w in words_in_line)
+                            top = min(w.get('top', 0) for w in words_in_line)
+                            bottom = max(w.get('bottom', 0) for w in words_in_line)
+                            
+                            lines.append({
+                                'line_index': line_idx,
+                                'text': line_text,
+                                'boundaries': {
+                                    'x0': x0, 'x1': x1,
+                                    'top': top, 'bottom': bottom,
+                                    'width': x1 - x0,
+                                    'height': bottom - top
+                                },
+                                'properties': {
+                                    'char_count': len(line_text),
+                                    'word_count': len(words_in_line),
+                                    'char_count_no_spaces': len(line_text.replace(' ', ''))
+                                },
+                                'metrics': {
+                                    'height': bottom - top,
+                                    'space_above': 0,  # Computed later
+                                    'space_below': 0,  # Computed later
+                                    'char_count': len(line_text),
+                                    'word_count': len(words_in_line),
+                                    'avg_font_size': 12,  # Default
+                                    'line_width': x1 - x0
+                                }
+                            })
+                        
+                        # Compute space_above and space_below
+                        for i, line in enumerate(lines):
+                            if i > 0:
+                                prev_bottom = lines[i-1]['boundaries']['bottom']
+                                curr_top = line['boundaries']['top']
+                                line['metrics']['space_above'] = max(0, curr_top - prev_bottom)
+                            
+                            if i < len(lines) - 1:
+                                curr_bottom = line['boundaries']['bottom']
+                                next_top = lines[i+1]['boundaries']['top']
+                                line['metrics']['space_below'] = max(0, next_top - curr_bottom)
+                        
+                        new_col['lines'] = lines
+                        
+                        # Add section hint if available
+                        if 'section_hint' in new_col:
+                            if _SEG_DEBUG:
+                                print(f"[resplit] Column {new_col['column_index']} has section hint: {new_col['section_hint']}")
+                    
+                    result_columns.extend(new_columns)
+                else:
+                    # Re-split failed, keep original
+                    if _SEG_DEBUG:
+                        print(f"[resplit] Re-split failed, keeping original columns for page {page_no}")
+                    result_columns.extend(page_cols)
+            
+            except Exception as e:
+                if _SEG_DEBUG:
+                    print(f"[resplit] Error during column re-splitting: {e}")
+                # Keep original columns on error
+                result_columns.extend(page_cols)
+        else:
+            # No multi-section header, keep original columns
+            result_columns.extend(page_cols)
+    
+    return result_columns
+
+
 def segment_sections_from_columns(columns_with_lines: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Segment columns-with-lines into sections. Two-pass approach:
-    1) Collect all heading candidates (with stylized matching) and filter outliers using metrics.
-    2) Iterate in reading order creating sections at accepted headings; collect probable unknown headings.
+    1) Pre-process: Detect multi-section headers and re-split columns if needed
+    2) Collect all heading candidates (with stylized matching) and filter outliers using metrics.
+    3) Iterate in reading order creating sections at accepted headings; collect probable unknown headings.
     Returns a full JSON containing sections with full line documents. Also prints a simplified JSON.
     """
     if not columns_with_lines:
         result = {"meta": {"pages": 0, "columns": 0, "sections": 0}, "sections": []}
         print(json.dumps([{"section": "Unknown", "lines": []}], ensure_ascii=False, indent=2))
         return result
+
+    # PRE-PROCESS: Re-split columns if multi-section headers detected
+    columns_with_lines = _resplit_columns_for_multi_sections(columns_with_lines)
 
     # First pass: candidates
     cands = _collect_candidates(columns_with_lines)
@@ -575,8 +798,7 @@ def segment_sections_from_columns(columns_with_lines: List[Dict[str, Any]]) -> D
                 continue            # Heuristic unknown heading -> try multi-section detection first, then embedding classification
             if _is_unknown_heading(line, stats):
                 raw_text = line.get('text', '') or ''
-                
-                # First, check if this is a multi-section header (e.g., "EXPERIENCE SKILLS")
+                  # First, check if this is a multi-section header (e.g., "EXPERIENCE SKILLS")
                 multi_sections_detected = False
                 if _SECTION_SPLITTER_AVAILABLE:
                     try:
@@ -588,6 +810,20 @@ def segment_sections_from_columns(columns_with_lines: List[Dict[str, Any]]) -> D
                             if _SEG_DEBUG:
                                 section_names = [s[0] for s in multi_sections]
                                 print(f"[segment] multi-section header detected: '{raw_text}' -> {section_names}")
+                            
+                            # AUTO-LEARN: Add detected sections to learner database
+                            if _SECTION_LEARNER_AVAILABLE:
+                                try:
+                                    learner = _get_section_learner()
+                                    if learner:
+                                        for section_name in [s[0] for s in multi_sections]:
+                                            # Try to learn this as a variant
+                                            learned = learner.add_variant(section_name, raw_text.strip(), auto_learn=True)
+                                            if learned and _SEG_DEBUG:
+                                                print(f"[segment] Auto-learned: '{raw_text}' -> {section_name}")
+                                except Exception as e:
+                                    if _SEG_DEBUG:
+                                        print(f"[segment] Auto-learning failed: {e}")
                             
                             # Record in unknown headings with special marker
                             unknown_headings.append({

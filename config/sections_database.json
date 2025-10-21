@@ -86,8 +86,10 @@
       ],
       "confidence_threshold": 0.75,
       "embedding_cluster_id": null
-    },    "Experience": {
-      "variants": [        "experience",
+    },
+    "Experience": {
+      "variants": [
+        "experience",
         "experiance",
         "experien",
         "exeperience",
@@ -127,7 +129,8 @@
         "internship",
         "exprofessional experience",
         "employment profile",
-        "employment summary",        "work profile",
+        "employment summary",
+        "work profile",
         "experiance & projects",
         "project highlight",
         "project highlights",
