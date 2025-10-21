@@ -1,7 +1,8 @@
-version: '3.8'
+version: "3.8"
 
 services:
-  resume-parser-api:
+  # Backend API Service
+  backend:
     build: .
     container_name: resume-parser-api
     ports:
@@ -28,6 +29,26 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+    networks:
+      - resume-parser-network
+
+  # Frontend Service
+  frontend:
+    build: ./frontend
+    container_name: resume-parser-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    environment:
+      - VITE_API_URL=http://localhost:8000/api/v1
+    restart: unless-stopped
+    networks:
+      - resume-parser-network
 
 volumes:
   resume-parser-temp:
+
+networks:
+  resume-parser-network:
+    driver: bridge
