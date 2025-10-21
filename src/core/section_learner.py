@@ -452,9 +452,9 @@ class SectionLearner:
         digit_count = sum(1 for c in text if c.isdigit())
         if digit_count > 4:
             return False
-        
-        # Likely a section header
+          # Likely a section header
         return True
+    
     def _add_section_variant(self, section_name: str, variant: str) -> bool:
         """
         Add a new variant to an existing section.
@@ -484,6 +484,89 @@ class SectionLearner:
         self._save_config()
         
         return True
+    
+    def learn_from_pattern(self, text: str) -> Optional[Tuple[str, float]]:
+        """
+        Learn section from common patterns without embeddings.
+        Useful for job titles, role descriptions, etc.
+        
+        Args:
+            text: The text to analyze
+            
+        Returns:
+            Tuple of (section_name, confidence) or None
+        """
+        text_lower = text.lower().strip()
+        
+        # Pattern 1: Job titles/roles → Experience
+        job_patterns = [
+            'developer', 'engineer', 'analyst', 'manager', 'architect',
+            'consultant', 'specialist', 'lead', 'senior', 'junior',
+            'intern', 'trainee', 'qa', 'tester', 'designer', 'programmer',
+            'scientist', 'researcher', 'coordinator', 'administrator',
+            'director', 'officer', 'assistant', 'associate'
+        ]
+        
+        for pattern in job_patterns:
+            if pattern in text_lower:
+                # High confidence if it ends with the pattern
+                if text_lower.endswith(pattern):
+                    return ('Experience', 0.9)
+                # Medium confidence if pattern is in the middle
+                return ('Experience', 0.75)
+        
+        # Pattern 2: Project indicators → Projects
+        project_patterns = ['project', 'portfolio', 'work sample', 'case study']
+        for pattern in project_patterns:
+            if pattern in text_lower:
+                return ('Projects', 0.8)
+        
+        # Pattern 3: Education indicators → Education
+        education_patterns = ['university', 'college', 'school', 'degree', 'bachelor', 'master', 'phd', 'diploma']
+        for pattern in education_patterns:
+            if pattern in text_lower:
+                return ('Education', 0.8)
+        
+        # Pattern 4: Certification indicators → Certifications  
+        cert_patterns = ['certification', 'certificate', 'certified', 'license', 'training']
+        for pattern in cert_patterns:
+            if pattern in text_lower:
+                return ('Certifications', 0.8)
+        
+        # Pattern 5: Skills indicators → Skills
+        skill_patterns = ['skill', 'expertise', 'proficiency', 'competenc', 'technical', 'knowledge']
+        for pattern in skill_patterns:
+            if pattern in text_lower:
+                return ('Skills', 0.75)
+        
+        return None
+    
+    def add_variant(self, section_name: str, variant: str, auto_learn: bool = True) -> bool:
+        """
+        Public method to add a variant to a section.
+        
+        Args:
+            section_name: The canonical section name
+            variant: The variant text to add
+            auto_learn: If True, try pattern-based learning if section doesn't exist
+            
+        Returns:
+            True if variant was added successfully
+        """
+        # Try to add to existing section
+        result = self._add_section_variant(section_name, variant)
+        
+        # If failed and auto_learn enabled, try pattern matching
+        if not result and auto_learn:
+            pattern_match = self.learn_from_pattern(variant)
+            if pattern_match:
+                learned_section, confidence = pattern_match
+                if confidence >= 0.75:
+                    result = self._add_section_variant(learned_section, variant)
+                    if result and self.verbose:
+                        print(f"[Learn] Pattern-matched '{variant}' -> {learned_section} ({confidence:.2f})")
+        
+        return result
     
     @property
     def verbose(self) -> bool:

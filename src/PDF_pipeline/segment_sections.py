@@ -4,6 +4,14 @@ from typing import List, Dict, Any, Tuple, Optional
 import os
 from pathlib import Path
 
+# Import section splitter for multi-section header detection
+try:
+    from src.core.section_splitter import get_section_splitter
+    _SECTION_SPLITTER_AVAILABLE = True
+except ImportError:
+    _SECTION_SPLITTER_AVAILABLE = False
+    print("[WARNING] Section splitter not available, multi-section headers may not be detected")
+
 # Input to this module:
 # - columns_with_lines: output of get_lines.get_column_wise_lines(...)
 #   Each column dict contains:
@@ -251,6 +259,43 @@ def _despaced(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", text.lower())
 
 
+def _split_multi_section_header(text: str) -> list[str]:
+    """
+    Split potential multi-section headers like 'EXPERIENCE SKILLS' into separate sections.
+    Returns list of potential section names found in the text.
+    """
+    if not text:
+        return []
+    
+    # Clean and normalize
+    cleaned = clean_for_heading(text).strip()
+    if not cleaned:
+        return []
+    
+    # Split by common separators
+    words = re.split(r'[\s\|/&]+', cleaned)
+    
+    # Filter out very short words (likely not section names)
+    potential_sections = [w.strip() for w in words if len(w.strip()) > 2]
+    
+    # Try to match each word as a section
+    matched_sections = []
+    for word in potential_sections:
+        # Try exact match first
+        word_lower = word.lower()
+        if word_lower in SECTION_MAP:
+            matched_sections.append(SECTION_MAP[word_lower])
+            continue
+        
+        # Try despaced match
+        word_nosep = _despaced(word)
+        if word_nosep in CANON_NOSEP_MAP:
+            matched_sections.append(CANON_NOSEP_MAP[word_nosep])
+            continue
+    
+    return matched_sections
+
+
 def guess_section_name(text: str) -> Optional[str]:
     """
     Keyword matcher with stylized-heading support:
@@ -259,6 +304,7 @@ def guess_section_name(text: str) -> Optional[str]:
     - Fallback: match after removing separators (spaces, hyphens, bullets):
       e x p e r i e n c e  -> experience
       E-X-P-E-R-I-E-N-C-E -> experience
+    - Handle multi-section headers like "EXPERIENCE SKILLS" (return first match)
     """
     if not text:
         return None
@@ -280,7 +326,15 @@ def guess_section_name(text: str) -> Optional[str]:
 
     # Fallback matching after removing separators
     s_nosep = _despaced(s0)
-    return CANON_NOSEP_MAP.get(s_nosep)
+    if s_nosep in CANON_NOSEP_MAP:
+        return CANON_NOSEP_MAP[s_nosep]
+    
+    # Try splitting multi-section headers
+    multi_sections = _split_multi_section_header(s0)
+    if multi_sections:
+        return multi_sections[0]  # Return first matched section
+    
+    return None
 
 
 def is_heading_line(line: Dict[str, Any], col_width: float, prev_line: Optional[Dict[str, Any]] = None) -> Tuple[bool, Optional[str], float]:
@@ -518,48 +572,79 @@ def segment_sections_from_columns(columns_with_lines: List[Dict[str, Any]]) -> D
                     sections.append(current_section)
                 sec_name = accepted_positions[key] or "Section"
                 current_section = {"section": sec_name, "lines": []}
-                continue
-
-            # Heuristic unknown heading -> try embedding classification
+                continue            # Heuristic unknown heading -> try multi-section detection first, then embedding classification
             if _is_unknown_heading(line, stats):
                 raw_text = line.get('text', '') or ''
-                predicted, score = (None, 0.0)
-                if _embeddings_allowed():
-                    if _SEG_DEBUG:
-                        print(f"[segment] classifying unknown heading via embeddings: '{raw_text}'")
-                    predicted, score = classify_header_embedding(clean_for_heading(raw_text))
-                else:
-                    if _SEG_DEBUG:
-                        print(f"[segment] embeddings disabled; recording unknown heading: '{raw_text}'")
-
-                if predicted:
-                    # persist learned variant for future exact match
+                
+                # First, check if this is a multi-section header (e.g., "EXPERIENCE SKILLS")
+                multi_sections_detected = False
+                if _SECTION_SPLITTER_AVAILABLE:
                     try:
-                        attrs = {
-                            "score": score,
-                            "uppercase_ratio": uppercase_ratio(raw_text),
+                        splitter = get_section_splitter()
+                        multi_sections = splitter.detect_multi_section_header(raw_text)
+                        
+                        if len(multi_sections) >= 2:
+                            # Found multiple sections in one line!
+                            if _SEG_DEBUG:
+                                section_names = [s[0] for s in multi_sections]
+                                print(f"[segment] multi-section header detected: '{raw_text}' -> {section_names}")
+                            
+                            # Record in unknown headings with special marker
+                            unknown_headings.append({
+                                "page": page_no,
+                                "column_index": col_idx,
+                                "line_index": int(line.get('line_index', li)),
+                                "text": f"[MULTI-SECTION: {', '.join([s[0] for s in multi_sections])}] {raw_text}",
+                                "boundaries": dict(line.get('boundaries', {})),
+                                "properties": dict(line.get('properties', {})),
+                                "metrics": dict(line.get('metrics', {})),
+                                "multi_sections": [s[0] for s in multi_sections]
+                            })
+                            multi_sections_detected = True
+                            continue
+                    except Exception as e:
+                        if _SEG_DEBUG:
+                            print(f"[segment] multi-section detection failed: {e}")
+                
+                # If not a multi-section header, try embedding classification
+                if not multi_sections_detected:
+                    predicted, score = (None, 0.0)
+                    if _embeddings_allowed():
+                        if _SEG_DEBUG:
+                            print(f"[segment] classifying unknown heading via embeddings: '{raw_text}'")
+                        predicted, score = classify_header_embedding(clean_for_heading(raw_text))
+                    else:
+                        if _SEG_DEBUG:
+                            print(f"[segment] embeddings disabled; recording unknown heading: '{raw_text}'")
+
+                    if predicted:
+                        # persist learned variant for future exact match
+                        try:
+                            attrs = {
+                                "score": score,
+                                "uppercase_ratio": uppercase_ratio(raw_text),
+                                "metrics": dict(line.get('metrics', {})),
+                            }
+                            _persist_learned_variant(predicted, raw_text.strip(), attrs)
+                        except Exception:
+                            pass
+                        # start a new section and skip adding heading line itself
+                        if current_section["lines"]:
+                            sections.append(current_section)
+                        current_section = {"section": predicted, "lines": []}
+                        continue
+                    else:
+                        # record as unknown, skip adding as content
+                        unknown_headings.append({
+                            "page": page_no,
+                            "column_index": col_idx,
+                            "line_index": int(line.get('line_index', li)),
+                            "text": raw_text,
+                            "boundaries": dict(line.get('boundaries', {})),
+                            "properties": dict(line.get('properties', {})),
                             "metrics": dict(line.get('metrics', {})),
-                        }
-                        _persist_learned_variant(predicted, raw_text.strip(), attrs)
-                    except Exception:
-                        pass
-                    # start a new section and skip adding heading line itself
-                    if current_section["lines"]:
-                        sections.append(current_section)
-                    current_section = {"section": predicted, "lines": []}
-                    continue
-                else:
-                    # record as unknown, skip adding as content
-                    unknown_headings.append({
-                        "page": page_no,
-                        "column_index": col_idx,
-                        "line_index": int(line.get('line_index', li)),
-                        "text": raw_text,
-                        "boundaries": dict(line.get('boundaries', {})),
-                        "properties": dict(line.get('properties', {})),
-                        "metrics": dict(line.get('metrics', {})),
-                    })
-                    continue
+                        })
+                        continue
 
             # Regular content line
             line_out = {

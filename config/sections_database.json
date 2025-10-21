@@ -86,10 +86,19 @@
       ],
       "confidence_threshold": 0.75,
       "embedding_cluster_id": null
-    },
-    "Experience": {
-      "variants": [
-        "experience",
+    },    "Experience": {
+      "variants": [        "experience",
+        "experiance",
+        "experien",
+        "exeperience",
+        "exeprofessional experience",
+        "experiance & projects",
+        "experiance and projects",
+        "experiance and work location",
+        "experience & work location",
+        "experience and work location",
+        "it experience",
+        "professional project experience",
         "current organisation",
         "current organization",
         "previous organzations",
@@ -118,9 +127,21 @@
         "internship",
         "exprofessional experience",
         "employment profile",
+        "employment summary",        "work profile",
         "experiance & projects",
-        "experien",
-        "experiance and work location"
+        "project highlight",
+        "project highlights",
+        "github link",
+        "react js developer",
+        "go developer",
+        "devops engineer",
+        "aws devops engineer",
+        "qa automation engineer",
+        "principal engineer",
+        "frontend developer",
+        "web developer",
+        "full stack developer",
+        "full-stack java developer"
       ],
       "confidence_threshold": 0.75,
       "embedding_cluster_id": null
