@@ -296,6 +296,189 @@ class ResumeParserService:
         
         return results
     
+    async def batch_segment_resumes(
+        self,
+        file_info: List[Dict[str, str]],
+        include_full_content: bool = True,
+        include_text_preview: bool = True,
+        progress_callback=None
+    ) -> List[Dict[str, Any]]:
+        """
+        Segment multiple resumes in batch for debugging
+        
+        Args:
+            file_info: List of dicts with 'path' and 'filename' keys
+            include_full_content: Include full section content
+            include_text_preview: Include text preview
+            progress_callback: Optional callback for progress updates
+            
+        Returns:
+            List of segmentation results
+        """
+        results = []
+        
+        for idx, info in enumerate(file_info):
+            file_path = info['path']
+            filename = info['filename']
+            
+            start_time = time.time()
+            
+            try:
+                # Extract text from file
+                file_ext = Path(file_path).suffix.lower()
+                
+                if file_ext == '.pdf':
+                    text = await self._extract_text_from_pdf(file_path)
+                elif file_ext in ['.docx', '.doc']:
+                    text = await self._extract_text_from_docx(file_path)
+                elif file_ext == '.txt':
+                    loop = asyncio.get_event_loop()
+                    text = await loop.run_in_executor(
+                        self._executor,
+                        lambda: open(file_path, 'r', encoding='utf-8', errors='ignore').read()
+                    )
+                else:
+                    raise ValueError(f"Unsupported file type: {file_ext}")
+                
+                # Check if text is empty
+                if not text or len(text.strip()) < 50:
+                    result = {
+                        'filename': filename,
+                        'file_path': file_path,
+                        'status': 'empty',
+                        'error': 'File appears empty or too short',
+                        'text_length': len(text) if text else 0,
+                        'section_count': 0,
+                        'sections_found': [],
+                        'sections': [],
+                        'processing_time_seconds': round(time.time() - start_time, 2)
+                    }
+                    results.append(result)
+                    
+                    if progress_callback:
+                        progress_callback(idx + 1, len(file_info))
+                    continue
+                
+                # Segment the resume
+                loop = asyncio.get_event_loop()
+                
+                if self.section_splitter:
+                    segments = await loop.run_in_executor(
+                        self._executor,
+                        self.section_splitter.split_sections,
+                        text
+                    )
+                else:
+                    # Fallback segmentation
+                    segments = await loop.run_in_executor(
+                        self._executor,
+                        self._fallback_segment,
+                        text
+                    )
+                
+                # Format sections
+                sections_info = []
+                for section_name, content in segments.items():
+                    section_data = {
+                        'section_name': section_name,
+                        'content_length': len(content),
+                        'line_count': len(content.split('\n')) if content else 0,
+                        'word_count': len(content.split()) if content else 0
+                    }
+                    
+                    if include_text_preview:
+                        preview = content[:300].replace('\n', ' ')[:200] if content else ''
+                        section_data['content_preview'] = preview + '...' if len(preview) == 200 else preview
+                    
+                    if include_full_content:
+                        section_data['full_content'] = content
+                    
+                    sections_info.append(section_data)
+                
+                # Create result
+                result = {
+                    'filename': filename,
+                    'file_path': file_path,
+                    'status': 'success',
+                    'text_length': len(text),
+                    'sections_found': list(segments.keys()),
+                    'section_count': len(segments),
+                    'sections': sections_info,
+                    'processing_time_seconds': round(time.time() - start_time, 2)
+                }
+                
+                if include_text_preview:
+                    preview = text[:500].replace('\n', ' ')[:200]
+                    result['text_preview'] = preview + '...' if len(preview) == 200 else preview
+                
+                results.append(result)
+                
+            except Exception as e:
+                result = {
+                    'filename': filename,
+                    'file_path': file_path,
+                    'status': 'error',
+                    'error': str(e),
+                    'section_count': 0,
+                    'sections_found': [],
+                    'sections': [],
+                    'processing_time_seconds': round(time.time() - start_time, 2)
+                }
+                results.append(result)
+            
+            if progress_callback:
+                progress_callback(idx + 1, len(file_info))
+        
+        return results
+    
+    def _fallback_segment(self, text: str) -> Dict[str, str]:
+        """Basic fallback segmentation using pattern matching"""
+        import re
+        
+        sections = {}
+        
+        # Common section patterns
+        patterns = {
+            'Experience': r'(?i)^(experience|employment|work history)',
+            'Education': r'(?i)^(education|academic|qualification)',
+            'Skills': r'(?i)^(skills|technical|expertise|competencies)',
+            'Summary': r'(?i)^(summary|objective|profile|about)',
+            'Projects': r'(?i)^(projects|portfolio)',
+            'Certifications': r'(?i)^(certifications|certificates|licenses)'
+        }
+        
+        lines = text.split('\n')
+        current_section = 'Unsegmented'
+        current_content = []
+        
+        for line in lines:
+            line_stripped = line.strip()
+            if not line_stripped:
+                continue
+            
+            # Check if line is a section header
+            matched_section = None
+            for section_name, pattern in patterns.items():
+                if re.match(pattern, line_stripped):
+                    matched_section = section_name
+                    break
+            
+            if matched_section:
+                # Save previous section
+                if current_content:
+                    sections[current_section] = '\n'.join(current_content)
+                # Start new section
+                current_section = matched_section
+                current_content = []
+            else:
+                current_content.append(line)
+        
+        # Save last section
+        if current_content:
+            sections[current_section] = '\n'.join(current_content)
+        
+        return sections
+    
     async def _extract_text_from_pdf(self, file_path: str) -> str:
         """Extract text from PDF file"""
         try:

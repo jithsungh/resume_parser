@@ -113,3 +113,48 @@ class ErrorResponse(BaseModel):
     error: str
     detail: Optional[str] = None
     timestamp: str
+
+
+class BatchSegmentationRequest(BaseModel):
+    """Batch segmentation debug request"""
+    include_full_content: bool = Field(default=True, description="Include full section content in results")
+    include_text_preview: bool = Field(default=True, description="Include text preview")
+
+
+class SectionDebugInfo(BaseModel):
+    """Detailed section information for debugging"""
+    section_name: str
+    content_length: int
+    content_preview: Optional[str] = None
+    full_content: Optional[str] = None
+    line_count: int
+    word_count: int
+
+
+class FileSegmentationResult(BaseModel):
+    """Segmentation result for a single file"""
+    filename: str
+    file_path: Optional[str] = None
+    status: str  # 'success', 'error', 'empty'
+    text_length: Optional[int] = None
+    text_preview: Optional[str] = None
+    sections_found: List[str] = []
+    section_count: int
+    sections: List[SectionDebugInfo] = []
+    error: Optional[str] = None
+    processing_time_seconds: Optional[float] = None
+
+
+class BatchSegmentationStatus(BaseModel):
+    """Batch segmentation processing status"""
+    job_id: str
+    status: ProcessingStatus
+    total_files: int
+    processed_files: int
+    failed_files: int
+    empty_files: int
+    results: List[FileSegmentationResult] = []
+    error_message: Optional[str] = None
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    statistics: Optional[Dict[str, Any]] = None

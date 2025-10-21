@@ -9,6 +9,7 @@ import {
   CheckCircle2,
   XCircle,
   Loader2,
+  Layers,
 } from "lucide-react";
 import Header from "./components/Header";
 import SingleParser from "./components/SingleParser";
@@ -17,6 +18,7 @@ import NERExtractor from "./components/NERExtractor";
 import SectionSegmenter from "./components/SectionSegmenter";
 import ContactExtractor from "./components/ContactExtractor";
 import Dashboard from "./components/Dashboard";
+import BatchSegmentationDebugger from "./components/BatchSegmentationDebugger";
 import { healthCheck } from "./api";
 
 function App() {
@@ -41,7 +43,6 @@ function App() {
       setLoading(false);
     }
   };
-
   const tabs = [
     { id: "dashboard", name: "Dashboard", icon: Activity },
     { id: "single", name: "Single Resume", icon: FileText },
@@ -49,6 +50,7 @@ function App() {
     { id: "ner", name: "NER Extraction", icon: Brain },
     { id: "sections", name: "Section Segmentation", icon: FileSearch },
     { id: "contact", name: "Contact Info", icon: Contact2 },
+    { id: "debug", name: "Segmentation Debugger", icon: Layers },
   ];
 
   if (loading) {
@@ -65,7 +67,6 @@ function App() {
   return (
     <div className="min-h-screen">
       <Header healthStatus={healthStatus} />
-
       {/* Status Banner */}
       {healthStatus && (
         <div
@@ -91,7 +92,6 @@ function App() {
           )}
         </div>
       )}
-
       {/* Navigation Tabs */}
       <div className="bg-white shadow-md sticky top-0 z-10">
         <div className="max-w-7xl mx-auto px-4">
@@ -115,8 +115,7 @@ function App() {
             })}
           </nav>
         </div>
-      </div>
-
+      </div>{" "}
       {/* Content Area */}
       <main className="max-w-7xl mx-auto px-4 py-8">
         <div className="animate-fade-in">
@@ -126,9 +125,9 @@ function App() {
           {activeTab === "ner" && <NERExtractor />}
           {activeTab === "sections" && <SectionSegmenter />}
           {activeTab === "contact" && <ContactExtractor />}
+          {activeTab === "debug" && <BatchSegmentationDebugger />}
         </div>
       </main>
-
       {/* Footer */}
       <footer className="bg-white border-t mt-12">
         <div className="max-w-7xl mx-auto px-4 py-6 text-center text-gray-600 text-sm">

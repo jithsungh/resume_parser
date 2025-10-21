@@ -105,4 +105,58 @@ export const getBatchStatus = async (jobId) => {
   return response.data;
 };
 
+// Batch Segmentation Processing
+export const batchSegmentSections = async (
+  files,
+  includeFullContent = true,
+  includeTextPreview = true
+) => {
+  const formData = new FormData();
+  files.forEach((file) => {
+    formData.append("files", file);
+  });
+
+  const response = await api.post("/batch/segment", formData, {
+    params: {
+      include_full_content: includeFullContent,
+      include_text_preview: includeTextPreview,
+    },
+    headers: {
+      "Content-Type": "multipart/form-data",
+    },
+  });
+  return response.data;
+};
+
+// Get Batch Segmentation Status
+export const getBatchSegmentationStatus = async (jobId) => {
+  const response = await api.get(`/batch/segment/status/${jobId}`);
+  return response.data;
+};
+
+// Download Batch Segmentation Results
+export const downloadBatchSegmentationResults = async (
+  jobId,
+  format = "json"
+) => {
+  const response = await api.get(`/batch/segment/download/${jobId}`, {
+    params: { format },
+    responseType: "blob",
+  });
+
+  // Create download link
+  const url = window.URL.createObjectURL(new Blob([response.data]));
+  const link = document.createElement("a");
+  link.href = url;
+  link.setAttribute(
+    "download",
+    `segmentation_${jobId}.${format === "csv" ? "csv" : "json"}`
+  );
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+
+  return response.data;
+};
+
 export default api;

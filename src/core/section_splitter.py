@@ -7,7 +7,7 @@ Handles cases where multiple section headers appear on the same line
 """
 
 import re
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 from pathlib import Path
 import json
 
@@ -149,6 +149,90 @@ class SectionSplitter:
             result.append((canonical, section_text))
         
         return result
+    
+    def split_sections(self, text: str) -> Dict[str, str]:
+        """
+        Split resume text into sections.
+        
+        Args:
+            text: The full resume text
+            
+        Returns:
+            Dictionary mapping canonical section names to their content
+        """
+        if not text:
+            return {}
+        
+        lines = text.split('\n')
+        sections = {}
+        current_section = 'Unknown'
+        current_content = []
+        
+        for line in lines:
+            line_stripped = line.strip()
+            if not line_stripped:
+                current_content.append(line)
+                continue
+            
+            # Check if this line is a known section header
+            normalized = self._normalize(line_stripped)
+            
+            # Try single word match
+            if normalized in self.known_sections:
+                # Save previous section
+                if current_content:
+                    content_text = '\n'.join(current_content).strip()
+                    if content_text:
+                        if current_section in sections:
+                            sections[current_section] += '\n\n' + content_text
+                        else:
+                            sections[current_section] = content_text
+                
+                # Start new section
+                current_section = self.known_sections[normalized]
+                current_content = []
+                continue
+            
+            # Try multi-word match (up to 4 words)
+            words = normalized.split()
+            found_section = False
+            
+            for length in range(min(4, len(words)), 0, -1):
+                for i in range(len(words) - length + 1):
+                    phrase = ' '.join(words[i:i+length])
+                    if phrase in self.known_sections:
+                        # Save previous section
+                        if current_content:
+                            content_text = '\n'.join(current_content).strip()
+                            if content_text:
+                                if current_section in sections:
+                                    sections[current_section] += '\n\n' + content_text
+                                else:
+                                    sections[current_section] = content_text
+                        
+                        # Start new section
+                        current_section = self.known_sections[phrase]
+                        current_content = []
+                        found_section = True
+                        break
+                
+                if found_section:
+                    break
+            
+            if not found_section:
+                # Not a section header, add to current section content
+                current_content.append(line)
+        
+        # Save final section
+        if current_content:
+            content_text = '\n'.join(current_content).strip()
+            if content_text:
+                if current_section in sections:
+                    sections[current_section] += '\n\n' + content_text
+                else:
+                    sections[current_section] = content_text
+        
+        return sections
 
 
 # Singleton instance

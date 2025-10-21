@@ -6,16 +6,16 @@ import time
 import tempfile
 import uuid
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from pathlib import Path
 
 from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from .models import (
     ResumeParseResult, NERResult, SectionSegmentResult,
     BatchProcessStatus, ProcessingStatus, HealthCheckResponse,
-    ErrorResponse
+    ErrorResponse, BatchSegmentationStatus
 )
 from .service import ResumeParserService
 
@@ -386,6 +386,265 @@ async def process_batch_job(job_id: str, file_paths: List[str]):
                     os.unlink(file_path)
                 except:
                     pass
+
+
+@router.post("/batch/segment", response_model=BatchSegmentationStatus)
+async def batch_segment_sections(
+    background_tasks: BackgroundTasks,
+    files: List[UploadFile] = File(..., description="Multiple resume files"),
+    include_full_content: bool = Query(default=True, description="Include full section content"),
+    include_text_preview: bool = Query(default=True, description="Include text preview")
+):
+    """
+    Segment multiple resumes in batch for debugging (async processing)
+    
+    This endpoint helps debug segmentation issues by:
+    - Processing multiple resumes and extracting sections
+    - Showing section boundaries and content
+    - Identifying files with no sections detected
+    - Providing statistics about section detection
+    
+    Returns a job_id to track progress.
+    Use GET /batch/segment/status/{job_id} to check progress
+    Use GET /batch/segment/download/{job_id}?format=json to download results
+    """
+    if not parser_service:
+        raise HTTPException(status_code=503, detail="Parser service not initialized")
+    
+    if len(files) == 0:
+        raise HTTPException(status_code=400, detail="No files provided")
+    
+    if len(files) > 200:
+        raise HTTPException(status_code=400, detail="Maximum 200 files allowed per batch")
+    
+    # Generate job ID
+    job_id = str(uuid.uuid4())
+    
+    # Save uploaded files temporarily
+    temp_file_info = []
+    for file in files:
+        file_ext = Path(file.filename).suffix.lower()
+        with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
+            content = await file.read()
+            tmp_file.write(content)
+            temp_file_info.append({
+                'path': tmp_file.name,
+                'filename': file.filename
+            })
+    
+    # Initialize job status
+    batch_jobs[job_id] = {
+        'type': 'segmentation',
+        'status': ProcessingStatus.PENDING,
+        'total_files': len(temp_file_info),
+        'processed_files': 0,
+        'failed_files': 0,
+        'empty_files': 0,
+        'results': [],
+        'started_at': datetime.utcnow().isoformat(),
+        'completed_at': None,
+        'error_message': None,
+        'include_full_content': include_full_content,
+        'include_text_preview': include_text_preview
+    }
+    
+    # Add background task
+    background_tasks.add_task(
+        process_batch_segmentation_job,
+        job_id,
+        temp_file_info,
+        include_full_content,
+        include_text_preview
+    )
+    
+    return BatchSegmentationStatus(
+        job_id=job_id,
+        status=ProcessingStatus.PENDING,
+        total_files=len(temp_file_info),
+        processed_files=0,
+        failed_files=0,
+        empty_files=0,
+        started_at=datetime.utcnow().isoformat()
+    )
+
+
+@router.get("/batch/segment/status/{job_id}", response_model=BatchSegmentationStatus)
+async def get_batch_segmentation_status(job_id: str):
+    """
+    Get status of batch segmentation job
+    
+    Returns current progress and results (if completed)
+    """
+    if job_id not in batch_jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    job = batch_jobs[job_id]
+    
+    if job.get('type') != 'segmentation':
+        raise HTTPException(status_code=400, detail="Job is not a segmentation job")
+    
+    # Calculate statistics if completed
+    statistics = None
+    if job['status'] == ProcessingStatus.COMPLETED:
+        statistics = calculate_segmentation_statistics(job['results'])
+    
+    return BatchSegmentationStatus(
+        job_id=job_id,
+        status=job['status'],
+        total_files=job['total_files'],
+        processed_files=job['processed_files'],
+        failed_files=job['failed_files'],
+        empty_files=job.get('empty_files', 0),
+        results=job['results'],
+        error_message=job.get('error_message'),
+        started_at=job['started_at'],
+        completed_at=job.get('completed_at'),
+        statistics=statistics
+    )
+
+
+@router.get("/batch/segment/download/{job_id}")
+async def download_batch_segmentation_results(
+    job_id: str,
+    format: str = Query(default="json", regex="^(json|csv)$")
+):
+    """
+    Download batch segmentation results
+    
+    Formats:
+    - json: Detailed JSON with full section content
+    - csv: CSV summary with section counts and previews
+    """
+    if job_id not in batch_jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    job = batch_jobs[job_id]
+    
+    if job.get('type') != 'segmentation':
+        raise HTTPException(status_code=400, detail="Job is not a segmentation job")
+    
+    if job['status'] != ProcessingStatus.COMPLETED:
+        raise HTTPException(status_code=400, detail="Job not completed yet")
+    
+    import json
+    import csv
+    import io
+    from fastapi.responses import StreamingResponse
+    
+    if format == "json":
+        # Return JSON
+        content = json.dumps(job['results'], indent=2, ensure_ascii=False)
+        
+        return StreamingResponse(
+            io.BytesIO(content.encode('utf-8')),
+            media_type="application/json",
+            headers={
+                "Content-Disposition": f"attachment; filename=segmentation_{job_id}.json"
+            }
+        )
+    
+    elif format == "csv":
+        # Convert to CSV
+        output = io.StringIO()
+        
+        # Define CSV columns
+        fieldnames = [
+            'Filename', 'Status', 'Text Length', 'Section Count',
+            'Sections Found', 'Error', 'Text Preview'
+        ]
+        
+        writer = csv.DictWriter(output, fieldnames=fieldnames)
+        writer.writeheader()
+        
+        for result in job['results']:
+            writer.writerow({
+                'Filename': result.get('filename', ''),
+                'Status': result.get('status', ''),
+                'Text Length': result.get('text_length', 0),
+                'Section Count': result.get('section_count', 0),
+                'Sections Found': ', '.join(result.get('sections_found', [])),
+                'Error': result.get('error', ''),
+                'Text Preview': result.get('text_preview', '')[:200]
+            })
+        
+        output.seek(0)
+        
+        return StreamingResponse(
+            io.BytesIO(output.getvalue().encode('utf-8')),
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": f"attachment; filename=segmentation_{job_id}.csv"
+            }
+        )
+
+
+async def process_batch_segmentation_job(
+    job_id: str, 
+    file_info: List[Dict[str, str]],
+    include_full_content: bool,
+    include_text_preview: bool
+):
+    """Background task to process batch segmentation job"""
+    job = batch_jobs[job_id]
+    job['status'] = ProcessingStatus.PROCESSING
+    
+    try:
+        results = await parser_service.batch_segment_resumes(
+            file_info,
+            include_full_content=include_full_content,
+            include_text_preview=include_text_preview,
+            progress_callback=lambda processed, total: job.update({'processed_files': processed})
+        )
+        
+        job['results'] = results
+        job['status'] = ProcessingStatus.COMPLETED
+        job['completed_at'] = datetime.utcnow().isoformat()
+        
+        # Count failures and empty files
+        job['failed_files'] = sum(1 for r in results if r.get('status') == 'error')
+        job['empty_files'] = sum(1 for r in results if r.get('status') == 'empty')
+        
+    except Exception as e:
+        job['status'] = ProcessingStatus.FAILED
+        job['error_message'] = str(e)
+        job['completed_at'] = datetime.utcnow().isoformat()
+    
+    finally:
+        # Cleanup temp files
+        for info in file_info:
+            file_path = info['path']
+            if os.path.exists(file_path):
+                try:
+                    os.unlink(file_path)
+                except:
+                    pass
+
+
+def calculate_segmentation_statistics(results: List[Dict]) -> Dict[str, Any]:
+    """Calculate statistics from segmentation results"""
+    total = len(results)
+    success = sum(1 for r in results if r.get('status') == 'success')
+    errors = sum(1 for r in results if r.get('status') == 'error')
+    empty = sum(1 for r in results if r.get('status') == 'empty')
+    
+    # Section frequency
+    section_counts = {}
+    for result in results:
+        for section in result.get('sections_found', []):
+            section_counts[section] = section_counts.get(section, 0) + 1
+    
+    # Files with no sections
+    no_sections = sum(1 for r in results if r.get('section_count', 0) == 0)
+    
+    return {
+        'total_files': total,
+        'successful': success,
+        'errors': errors,
+        'empty': empty,
+        'no_sections_detected': no_sections,
+        'section_frequency': section_counts,
+        'most_common_sections': sorted(section_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+    }
 
 
 def set_parser_service(service: ResumeParserService):
