@@ -11,24 +11,28 @@ from concurrent.futures import ThreadPoolExecutor
 
 from ..core.complete_resume_parser import CompleteResumeParser
 from ..core.name_location_extractor import NameLocationExtractor
-from ..core.section_splitter import SectionSplitter
-from ..PDF_pipeline.pipeline import PDFPipeline
 from .models import (
     ResumeParseResult, NERResult, SectionSegmentResult,
     ExperienceEntry, NEREntity, SectionSegment
 )
 
+# Optional imports - may not be available
+try:
+    from ..core.section_splitter import SectionSplitter
+    SECTION_SPLITTER_AVAILABLE = True
+except ImportError:
+    SectionSplitter = None
+    SECTION_SPLITTER_AVAILABLE = False
+
 
 class ResumeParserService:
     """Service for resume parsing operations"""
-    
-    def __init__(self, model_path: str):
+      def __init__(self, model_path: str):
         """Initialize parser service"""
         self.model_path = model_path
         self.parser = None
         self.name_location_extractor = None
         self.section_splitter = None
-        self.pdf_pipeline = None
         self._executor = ThreadPoolExecutor(max_workers=4)
         
     def initialize(self):
@@ -37,25 +41,20 @@ class ResumeParserService:
         
         # Initialize main parser
         self.parser = CompleteResumeParser(self.model_path)
-        
-        # Initialize name/location extractor
+          # Initialize name/location extractor
         self.name_location_extractor = NameLocationExtractor()
         
         # Initialize section splitter
-        try:
-            self.section_splitter = SectionSplitter()
-            print("✅ Section splitter initialized")
-        except Exception as e:
-            print(f"⚠️  Section splitter not available: {e}")
+        if SECTION_SPLITTER_AVAILABLE:
+            try:
+                self.section_splitter = SectionSplitter()
+                print("✅ Section splitter initialized")
+            except Exception as e:
+                print(f"⚠️  Section splitter initialization failed: {e}")
+                self.section_splitter = None
+        else:
+            print("⚠️  Section splitter not available")
             self.section_splitter = None
-        
-        # Initialize PDF pipeline
-        try:
-            self.pdf_pipeline = PDFPipeline()
-            print("✅ PDF pipeline initialized")
-        except Exception as e:
-            print(f"⚠️  PDF pipeline not available: {e}")
-            self.pdf_pipeline = None
         
         print("✅ Resume Parser Service initialized!\n")
     
@@ -295,11 +294,14 @@ class ResumeParserService:
                 progress_callback(idx + 1, len(file_paths))
         
         return results
-    
-    async def _extract_text_from_pdf(self, file_path: str) -> str:
+      async def _extract_text_from_pdf(self, file_path: str) -> str:
         """Extract text from PDF file"""
         try:
             import PyPDF2
+        except ImportError:
+            raise ValueError("PyPDF2 not installed. Install with: pip install PyPDF2")
+        
+        try:
             loop = asyncio.get_event_loop()
             
             def extract():
@@ -318,6 +320,10 @@ class ResumeParserService:
         """Extract text from DOCX file"""
         try:
             from docx import Document
+        except ImportError:
+            raise ValueError("python-docx not installed. Install with: pip install python-docx")
+        
+        try:
             loop = asyncio.get_event_loop()
             
             def extract():

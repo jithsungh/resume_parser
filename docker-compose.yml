@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  resume-parser-api:
+    build: .
+    container_name: resume-parser-api
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount model directory
+      - ./ml_model:/app/ml_model:ro
+      # Mount outputs directory
+      - ./outputs:/app/outputs
+      # Mount temp directory for file uploads
+      - resume-parser-temp:/app/temp
+    environment:
+      - MODEL_PATH=/app/ml_model
+      - HOST=0.0.0.0
+      - PORT=8000
+      - RELOAD=False
+      - MAX_BATCH_SIZE=100
+      - WORKER_THREADS=4
+      - LOG_LEVEL=INFO
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  resume-parser-temp:
