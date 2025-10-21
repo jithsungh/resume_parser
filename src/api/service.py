@@ -27,8 +27,9 @@ except ImportError:
 
 class ResumeParserService:
     """Service for resume parsing operations"""
-      def __init__(self, model_path: str):
-        """Initialize parser service"""
+    
+    def __init__(self, model_path: str):
+    """Initialize parser service"""
         self.model_path = model_path
         self.parser = None
         self.name_location_extractor = None
