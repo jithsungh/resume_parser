@@ -295,7 +295,8 @@ class ResumeParserService:
                 progress_callback(idx + 1, len(file_paths))
         
         return results
-      async def _extract_text_from_pdf(self, file_path: str) -> str:
+    
+    async def _extract_text_from_pdf(self, file_path: str) -> str:
         """Extract text from PDF file"""
         try:
             import PyPDF2
