@@ -288,20 +288,21 @@ async def batch_parse_resumes(
     
     # Generate job ID
     job_id = str(uuid.uuid4())
-    
-    # Save uploaded files temporarily
-    temp_files = []
+      # Save uploaded files temporarily, preserving original filenames
+    temp_file_info = []
     for file in files:
         file_ext = Path(file.filename).suffix.lower()
         with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
             content = await file.read()
             tmp_file.write(content)
-            temp_files.append(tmp_file.name)
-    
-    # Initialize job status
+            temp_file_info.append({
+                'path': tmp_file.name,
+                'filename': file.filename  # Preserve original filename
+            })
+      # Initialize job status
     batch_jobs[job_id] = {
         'status': ProcessingStatus.PENDING,
-        'total_files': len(temp_files),
+        'total_files': len(temp_file_info),
         'processed_files': 0,
         'failed_files': 0,
         'results': [],
@@ -314,13 +315,13 @@ async def batch_parse_resumes(
     background_tasks.add_task(
         process_batch_job,
         job_id,
-        temp_files
+        temp_file_info  # Pass info with both path and filename
     )
     
     return BatchProcessStatus(
         job_id=job_id,
         status=ProcessingStatus.PENDING,
-        total_files=len(temp_files),
+        total_files=len(temp_file_info),
         processed_files=0,
         failed_files=0,
         started_at=datetime.utcnow().isoformat()
@@ -352,7 +353,7 @@ async def get_batch_status(job_id: str):
     )
 
 
-async def process_batch_job(job_id: str, file_paths: List[str]):
+async def process_batch_job(job_id: str, file_info: List[Dict[str, str]]):
     """Background task to process batch job"""
     job = batch_jobs[job_id]
     job['status'] = ProcessingStatus.PROCESSING
@@ -362,7 +363,7 @@ async def process_batch_job(job_id: str, file_paths: List[str]):
             job['processed_files'] = processed
         
         results = await parser_service.batch_parse_resumes(
-            file_paths,
+            file_info,  # Now includes both path and filename
             progress_callback=progress_callback
         )
         
@@ -380,7 +381,8 @@ async def process_batch_job(job_id: str, file_paths: List[str]):
     
     finally:
         # Cleanup temp files
-        for file_path in file_paths:
+        for info in file_info:
+            file_path = info['path']
             if os.path.exists(file_path):
                 try:
                     os.unlink(file_path)

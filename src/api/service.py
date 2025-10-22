@@ -257,20 +257,19 @@ class ResumeParserService:
         return {
             'name': name_location.get('name'),
             'email': contact_info.get('email'),
-            'mobile': contact_info.get('mobile'),
-            'location': name_location.get('location')
+            'mobile': contact_info.get('mobile'),            'location': name_location.get('location')
         }
     
     async def batch_parse_resumes(
         self,
-        file_paths: List[str],
+        file_info: List[Dict[str, str]],
         progress_callback=None
     ) -> List[ResumeParseResult]:
         """
         Parse multiple resumes in batch
         
         Args:
-            file_paths: List of file paths
+            file_info: List of dicts with 'path' and 'filename' keys
             progress_callback: Optional callback for progress updates
             
         Returns:
@@ -278,21 +277,37 @@ class ResumeParserService:
         """
         results = []
         
-        for idx, file_path in enumerate(file_paths):
+        for idx, info in enumerate(file_info):
+            file_path = info['path']
+            filename = info['filename']  # Use original filename
+            
             try:
-                result = await self.parse_resume_file(file_path)
+                # Extract text based on file type
+                file_ext = Path(file_path).suffix.lower()
+                
+                if file_ext == '.pdf':
+                    text = await self._extract_text_from_pdf(file_path)
+                elif file_ext in ['.docx', '.doc']:
+                    text = await self._extract_text_from_docx(file_path)
+                elif file_ext == '.txt':
+                    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        text = f.read()
+                else:
+                    raise ValueError(f"Unsupported file type: {file_ext}")
+                  # Parse with original filename for name extraction heuristics
+                result = await self.parse_resume_text(text, filename)
                 results.append(result)
             except Exception as e:
-                print(f"Error parsing {file_path}: {e}")
+                print(f"Error parsing {filename}: {e}")
                 results.append(
                     ResumeParseResult(
-                        filename=Path(file_path).name,
+                        filename=filename,
                         error=str(e)
                     )
                 )
             
             if progress_callback:
-                progress_callback(idx + 1, len(file_paths))
+                progress_callback(idx + 1, len(file_info))
         
         return results
     
