@@ -95,6 +95,79 @@ async def parse_single_resume(
             os.unlink(tmp_file_path)
 
 
+@router.post("/parse/smart")
+async def smart_parse_resume_file(
+    file: UploadFile = File(..., description="Resume file (PDF, DOCX)"),
+    force_pipeline: Optional[str] = Query(None, description="Force 'pdf' or 'ocr' pipeline")
+):
+    """
+    Smart layout-aware resume parsing (RECOMMENDED)
+    
+    This endpoint uses intelligent layout detection to:
+    1. Analyze PDF structure (columns, text quality, scanned vs native)
+    2. Automatically select optimal pipeline (PDF or OCR)
+    3. Handle multi-column layouts correctly
+    4. Support letter-spaced headings (e.g., "P R O F I L E")
+    5. Extract sections with high accuracy
+    
+    Supports: PDF, DOCX files
+    
+    Returns:
+    - sections: Array of {section_name, lines[]}
+    - metadata: Pipeline used, processing time, layout analysis
+    - simplified: Simplified JSON format
+    """
+    if not parser_service:
+        raise HTTPException(status_code=503, detail="Parser service not initialized")
+    
+    # Validate file type
+    allowed_extensions = ['.pdf', '.docx', '.doc']
+    file_ext = Path(file.filename).suffix.lower()
+    
+    if file_ext not in allowed_extensions:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type. Allowed: {', '.join(allowed_extensions)}"
+        )
+    
+    # Validate force_pipeline parameter
+    if force_pipeline and force_pipeline not in ['pdf', 'ocr']:
+        raise HTTPException(
+            status_code=400,
+            detail="force_pipeline must be either 'pdf' or 'ocr'"
+        )
+    
+    # Save uploaded file temporarily
+    with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
+        content = await file.read()
+        tmp_file.write(content)
+        tmp_file_path = tmp_file.name
+    
+    try:
+        # Use smart parser
+        result = await parser_service.smart_parse_pdf_file(
+            tmp_file_path,
+            force_pipeline=force_pipeline
+        )
+        
+        return {
+            "success": True,
+            "filename": file.filename,
+            "sections": result['result'].get('sections', []),
+            "metadata": result['metadata'],
+            "simplified_output": result['simplified']
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error parsing resume: {str(e)}"
+        )
+    finally:
+        # Cleanup temp file
+        if os.path.exists(tmp_file_path):
+            os.unlink(tmp_file_path)
+
+
 @router.post("/parse/text", response_model=ResumeParseResult)
 async def parse_resume_text(
     text: str,
@@ -328,6 +401,98 @@ async def batch_parse_resumes(
     )
 
 
+@router.post("/batch/smart-parse")
+async def batch_smart_parse_resumes(
+    background_tasks: BackgroundTasks,
+    files: List[UploadFile] = File(..., description="Multiple resume files (PDF, DOCX)"),
+    force_pipeline: Optional[str] = Query(None, description="Force 'pdf' or 'ocr' for all files")
+):
+    """
+    Smart batch parsing with layout detection (RECOMMENDED FOR PRODUCTION)
+    
+    Process multiple resumes using intelligent layout-aware parsing:
+    - Automatically detects best pipeline per file
+    - Handles multi-column layouts
+    - Supports both native and scanned PDFs
+    - Processes DOCX files
+    - Asynchronous background processing
+    
+    Returns:
+    - job_id: Track progress with GET /batch/status/{job_id}
+    - file_count: Number of files queued
+    - estimated_time: Rough time estimate
+    
+    Supports: PDF, DOCX files
+    """
+    if not parser_service:
+        raise HTTPException(status_code=503, detail="Parser service not initialized")
+    
+    # Validate file types
+    allowed_extensions = ['.pdf', '.docx', '.doc']
+    for file in files:
+        file_ext = Path(file.filename).suffix.lower()
+        if file_ext not in allowed_extensions:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File '{file.filename}' has unsupported type. Allowed: {', '.join(allowed_extensions)}"
+            )
+    
+    # Validate force_pipeline
+    if force_pipeline and force_pipeline not in ['pdf', 'ocr']:
+        raise HTTPException(
+            status_code=400,
+            detail="force_pipeline must be either 'pdf' or 'ocr'"
+        )
+    
+    # Generate job ID
+    job_id = str(uuid.uuid4())
+    
+    # Save files temporarily
+    temp_dir = Path(tempfile.mkdtemp())
+    saved_files = []
+    
+    for file in files:
+        file_path = temp_dir / file.filename
+        content = await file.read()
+        with open(file_path, 'wb') as f:
+            f.write(content)
+        saved_files.append(str(file_path))
+    
+    # Initialize job status
+    batch_jobs[job_id] = {
+        'status': 'processing',
+        'total': len(saved_files),
+        'completed': 0,
+        'failed': 0,
+        'results': [],
+        'errors': [],
+        'created_at': datetime.utcnow().isoformat(),
+        'pipeline_type': 'smart',
+        'force_pipeline': force_pipeline
+    }
+    
+    # Process in background
+    background_tasks.add_task(
+        process_smart_batch_job,
+        job_id,
+        saved_files,
+        temp_dir,
+        force_pipeline
+    )
+    
+    # Estimate time (rough: 2-5 seconds per file depending on pipeline)
+    avg_time_per_file = 3.5
+    estimated_time = len(saved_files) * avg_time_per_file
+    
+    return {
+        'job_id': job_id,
+        'status': 'processing',
+        'total_files': len(saved_files),
+        'estimated_time_seconds': int(estimated_time),
+        'message': f'Processing {len(saved_files)} files in background using smart parser'
+    }
+
+
 @router.get("/batch/status/{job_id}", response_model=BatchProcessStatus)
 async def get_batch_status(job_id: str):
     """
@@ -388,6 +553,53 @@ async def process_batch_job(job_id: str, file_info: List[Dict[str, str]]):
                     os.unlink(file_path)
                 except:
                     pass
+
+
+async def process_smart_batch_job(
+    job_id: str,
+    file_paths: List[str],
+    temp_dir: Path,
+    force_pipeline: Optional[str]
+):
+    """Background task to process batch job using smart parser"""
+    try:
+        for file_path in file_paths:
+            try:
+                # Parse using smart parser
+                result = await parser_service.smart_parse_pdf_file(
+                    file_path,
+                    force_pipeline=force_pipeline
+                )
+                
+                batch_jobs[job_id]['results'].append({
+                    'filename': Path(file_path).name,
+                    'success': True,
+                    'sections': result['result'].get('sections', []),
+                    'metadata': result['metadata'],
+                    'pipeline_used': result['metadata'].get('pipeline_used')
+                })
+                batch_jobs[job_id]['completed'] += 1
+                
+            except Exception as e:
+                batch_jobs[job_id]['errors'].append({
+                    'filename': Path(file_path).name,
+                    'error': str(e)
+                })
+                batch_jobs[job_id]['failed'] += 1
+        
+        batch_jobs[job_id]['status'] = 'completed'
+        batch_jobs[job_id]['completed_at'] = datetime.utcnow().isoformat()
+        
+    except Exception as e:
+        batch_jobs[job_id]['status'] = 'failed'
+        batch_jobs[job_id]['error'] = str(e)
+    finally:
+        # Cleanup temp directory
+        import shutil
+        try:
+            shutil.rmtree(temp_dir)
+        except:
+            pass
 
 
 @router.post("/batch/segment", response_model=BatchSegmentationStatus)

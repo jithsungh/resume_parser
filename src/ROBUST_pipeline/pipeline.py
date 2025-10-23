@@ -30,6 +30,12 @@ try:
 except ImportError:
     HAS_EASYOCR = False
 
+try:
+    from docx import Document
+    HAS_DOCX = True
+except ImportError:
+    HAS_DOCX = False
+
 from src.PDF_pipeline.segment_sections import (
     SECTION_MAP,
     guess_section_name,
@@ -355,9 +361,68 @@ def recursive_block_split(img: np.ndarray, x: int, y: int, width: int, height: i
     }]
 
 
+def detect_columns(lines: List[Dict[str, Any]], page_width: float) -> List[List[Dict[str, Any]]]:
+    """
+    Detect columns in a page by clustering lines based on their x-coordinates.
+    
+    Args:
+        lines: List of text lines with coordinates
+        page_width: Width of the page
+        
+    Returns:
+        List of columns, each containing lines in that column
+    """
+    if not lines:
+        return []
+    
+    # Calculate center x-coordinate for each line
+    for line in lines:
+        line['center_x'] = (line['x0'] + line['x1']) / 2
+    
+    # Use k-means-like clustering to detect columns
+    # Start by checking if there are distinct x-coordinate groups
+    center_xs = sorted([line['center_x'] for line in lines])
+    
+    # Check for gaps in x-coordinates that indicate column boundaries
+    gaps = []
+    for i in range(len(center_xs) - 1):
+        gap = center_xs[i + 1] - center_xs[i]
+        if gap > page_width * 0.05:  # Gap > 5% of page width
+            gaps.append((gap, (center_xs[i] + center_xs[i + 1]) / 2))
+    
+    if not gaps:
+        # Single column - return all lines
+        return [lines]
+    
+    # Find the largest gap (most likely column boundary)
+    gaps.sort(reverse=True)
+    column_boundaries = [gap[1] for gap in gaps[:2]]  # Take up to 2 largest gaps (max 3 columns)
+    column_boundaries.sort()
+    
+    # Assign lines to columns
+    columns = [[] for _ in range(len(column_boundaries) + 1)]
+    
+    for line in lines:
+        center_x = line['center_x']
+        
+        # Find which column this line belongs to
+        col_idx = 0
+        for boundary in column_boundaries:
+            if center_x < boundary:
+                break
+            col_idx += 1
+        
+        columns[col_idx].append(line)
+    
+    # Filter out empty columns
+    columns = [col for col in columns if col]
+    
+    return columns
+
+
 def extract_text_from_pdf_page(pdf_path: str, page_num: int) -> List[Dict[str, Any]]:
     """
-    Extract text from PDF using PyMuPDF (native text extraction).
+    Extract text from PDF using PyMuPDF (native text extraction) with column detection.
     
     Args:
         pdf_path: Path to PDF file
@@ -372,8 +437,10 @@ def extract_text_from_pdf_page(pdf_path: str, page_num: int) -> List[Dict[str, A
     try:
         doc = fitz.open(str(pdf_path))
         page = doc[page_num]
+        page_width = page.rect.width
+        page_height = page.rect.height
         
-        # Extract text with coordinates
+        # Extract text with coordinates - use "blocks" instead of "dict" for better grouping
         blocks = page.get_text("dict")["blocks"]
         
         lines = []
@@ -386,7 +453,7 @@ def extract_text_from_pdf_page(pdf_path: str, page_num: int) -> List[Dict[str, A
                 for span in line.get("spans", []):
                     text_parts.append(span.get("text", ""))
                 
-                text = " ".join(text_parts).strip()
+                text = "".join(text_parts).strip()  # Changed from " ".join to "".join to avoid extra spaces
                 if not text:
                     continue
                 
@@ -405,12 +472,96 @@ def extract_text_from_pdf_page(pdf_path: str, page_num: int) -> List[Dict[str, A
         
         doc.close()
         
-        # Sort by y-coordinate (reading order)
-        lines.sort(key=lambda l: (l['y0'], l['x0']))
+        if not lines:
+            return []
+        
+        # Detect columns by clustering x-coordinates
+        columns = detect_columns(lines, page_width)
+        
+        # Sort lines within each column, then concatenate columns left-to-right
+        sorted_lines = []
+        for column in columns:
+            # Sort by y-coordinate within column
+            column.sort(key=lambda l: l['y0'])
+            sorted_lines.extend(column)
+        
+        # Merge lines that are on the same horizontal level (same y-coordinate within tolerance)
+        merged_lines = []
+        if lines:
+            current_line = lines[0].copy()
+            
+            for i in range(1, len(lines)):
+                next_line = lines[i]
+                
+                # Check if lines are on the same horizontal level (within 2 pixels)
+                if abs(next_line['y0'] - current_line['y0']) < 2:
+                    # Same line - merge text
+                    # Add space if there's a gap between words
+                    gap = next_line['x0'] - current_line['x1']
+                    if gap > 5:  # Significant gap - add space
+                        current_line['text'] += ' ' + next_line['text']
+                    else:  # Small gap - just concatenate
+                        current_line['text'] += next_line['text']
+                    
+                    # Update bounding box
+                    current_line['x1'] = max(current_line['x1'], next_line['x1'])
+                    current_line['y1'] = max(current_line['y1'], next_line['y1'])
+                else:
+                    # Different line - save current and start new
+                    merged_lines.append(current_line)
+                    current_line = next_line.copy()
+            
+            # Don't forget the last line
+            merged_lines.append(current_line)
+        
+        return merged_lines
+    except Exception as e:
+        print(f"Warning: PyMuPDF text extraction failed: {e}")
+        return []
+
+
+def extract_text_from_docx(docx_path: str) -> List[Dict[str, Any]]:
+    """
+    Extract text from DOCX file using python-docx.
+    
+    Args:
+        docx_path: Path to DOCX file
+        
+    Returns:
+        List of text lines with simulated coordinates
+    """
+    if not HAS_DOCX:
+        return []
+    
+    try:
+        doc = Document(str(docx_path))
+        
+        lines = []
+        y_position = 0.0
+        line_height = 12.0  # Simulated line height
+        
+        for para in doc.paragraphs:
+            text = para.text.strip()
+            if not text:
+                y_position += line_height * 0.5  # Small gap for empty lines
+                continue
+            
+            # Simulated coordinates (DOCX doesn't have actual coordinates)
+            lines.append({
+                'text': text,
+                'x0': 0.0,
+                'y0': y_position,
+                'x1': 600.0,  # Simulated page width
+                'y1': y_position + line_height,
+                'height': line_height,
+                'confidence': 1.0,  # Native text has high confidence
+            })
+            
+            y_position += line_height + 2.0  # Add spacing between paragraphs
         
         return lines
     except Exception as e:
-        print(f"Warning: PyMuPDF text extraction failed: {e}")
+        print(f"Warning: DOCX text extraction failed: {e}")
         return []
 
 
@@ -574,47 +725,84 @@ def detect_headings_in_block(block: Dict[str, Any], lines: List[Dict[str, Any]],
         if not text:
             continue
         
+        # Skip very long lines (likely content, not headings)
+        word_count = len(text.split())
+        char_count = len(text)
+        if word_count > 10 or char_count > 60:
+            continue
+        
+        # Skip lines that look like bullet points or list items
+        if text.startswith('•') or text.startswith('-') or text.startswith('*'):
+            continue
+        
+        # Skip lines with URLs, emails, or phone numbers
+        if any(pattern in text.lower() for pattern in ['http', '@', 'www.', '.com', '.in']):
+            continue
+        if re.search(r'\d{10}', text):  # Phone number
+            continue
+        
+        # Check for section keywords first (most important)
+        cleaned = clean_for_heading(text).lower()
+        canon = guess_section_name(cleaned)
+        
         # Compute features
         features = compute_text_features(text, lines, block_stats)
         
-        # Heading score (0-1)
+        # Heading score (0-1) - much more conservative
         score = 0.0
         
-        # Keyword match is strong signal
-        if features.get('has_keyword', 0) > 0:
-            score += 0.4
+        # STRONG indicators (required)
+        has_keyword = canon is not None
+        is_all_caps = features.get('upper_ratio', 0) >= 0.9
+        has_colon = text.strip().endswith(':')
         
-        # Short length
-        if features.get('short_enough', 0) > 0:
-            score += 0.15
+        # If it has a known section keyword, boost significantly
+        if has_keyword:
+            score += 0.5
+            
+            # Additional boost if it's JUST the keyword (like "SUMMARY", "EXPERIENCE")
+            if word_count <= 3 and (is_all_caps or has_colon):
+                score += 0.3
         
-        # Uppercase or title case
-        if features.get('upper_ratio', 0) > 0.7:
+        # All caps AND short (strong heading indicator)
+        if is_all_caps and word_count <= 5:
+            score += 0.25
+        
+        # Trailing colon (common in headings)
+        if has_colon and word_count <= 5:
             score += 0.2
-        elif features.get('title_case', 0) > 0.8:
+        
+        # Title case with short length
+        if features.get('title_case', 0) >= 0.8 and word_count <= 4:
             score += 0.15
         
-        # Trailing colon
-        if features.get('has_colon', 0) > 0:
-            score += 0.1
+        # Height significantly larger than average
+        if 'height' in line and line['height'] > 1.3 * avg_height:
+            score += 0.15
         
-        # Height (larger than average)
-        if 'height' in line and line['height'] > 1.2 * avg_height:
-            score += 0.1
-        
-        # Spacing above (if not first line)
+        # Large spacing above (separated from previous content)
         if i > 0:
             space_above = line['y0'] - lines[i-1]['y1']
-            if space_above > 1.5 * avg_spacing:
+            if space_above > 2.0 * avg_spacing:
                 score += 0.15
         
-        # Position (first few lines more likely to be headings)
-        if i < 3:
-            score += 0.05
+        # PENALTIES for non-heading characteristics
         
-        # Accept if score is high enough
-        if score >= 0.3:  # Dynamic threshold
-            canon = guess_section_name(clean_for_heading(text))
+        # Penalize if it starts with lowercase (unlikely heading)
+        if text and text[0].islower():
+            score -= 0.2
+        
+        # Penalize if it contains too many numbers
+        num_digits = sum(c.isdigit() for c in text)
+        if num_digits > len(text) * 0.3:
+            score -= 0.15
+        
+        # Penalize if it's too long
+        if word_count > 5:
+            score -= 0.15
+        
+        # Accept only if score is high enough (much stricter threshold)
+        if score >= 0.6:  # Raised from 0.3 to 0.6
             headings.append({
                 'text': text,
                 'canon': canon or 'Unknown',
@@ -649,34 +837,36 @@ def split_sections_in_block(block: Dict[str, Any], headings: List[Dict[str, Any]
         # No headings found, treat entire block as content
         return {'Unknown': lines}
     
+    # Sort headings by line index
+    headings_sorted = sorted(headings, key=lambda h: h['line_index'])
+    
     sections = {}
-    current_section = headings[0]['canon']
-    current_lines = []
-    heading_indices = {h['line_index'] for h in headings}
     
-    for i, line in enumerate(lines):
-        # Check if this line is a heading
-        if i in heading_indices:
-            # Save previous section
-            if current_lines:
-                if current_section not in sections:
-                    sections[current_section] = []
-                sections[current_section].extend(current_lines)
-            
-            # Start new section
-            current_section = next(h['canon'] for h in headings if h['line_index'] == i)
-            current_lines = []
+    for idx, heading in enumerate(headings_sorted):
+        section_name = heading['canon']
+        start_idx = heading['line_index'] + 1  # Start after the heading
+        
+        # Find end index (next heading or end of lines)
+        if idx < len(headings_sorted) - 1:
+            end_idx = headings_sorted[idx + 1]['line_index']
         else:
-            # Add to current section
-            current_lines.append(line)
+            end_idx = len(lines)
+        
+        # Extract section lines (excluding the heading itself)
+        section_lines = []
+        for i in range(start_idx, end_idx):
+            # Skip if this line is also a heading
+            if any(h['line_index'] == i for h in headings):
+                continue
+            section_lines.append(lines[i])
+        
+        # Add to sections
+        if section_lines:
+            if section_name not in sections:
+                sections[section_name] = []
+            sections[section_name].extend(section_lines)
     
-    # Save last section
-    if current_lines:
-        if current_section not in sections:
-            sections[current_section] = []
-        sections[current_section].extend(current_lines)
-    
-    return sections
+    return sections if sections else {'Unknown': lines}
 
 
 def merge_sections(all_sections: List[Dict[str, List[Dict[str, Any]]]]) -> Dict[str, List[Dict[str, Any]]]:
@@ -729,12 +919,13 @@ def robust_pipeline(path: str, use_ocr: bool = True, use_gpu: bool = False,
         if verbose:
             print("[Robust Pipeline] Initializing EasyOCR...")
         reader = easyocr.Reader(['en'], gpu=use_gpu)
-    
-    # Determine number of pages
+      # Determine number of pages
     if path_obj.suffix.lower() == '.pdf' and HAS_PYMUPDF:
         doc = fitz.open(str(path))
         num_pages = len(doc)
         doc.close()
+    elif path_obj.suffix.lower() in ['.docx', '.doc']:
+        num_pages = 1  # DOCX files are treated as single page
     else:
         num_pages = 1
     
@@ -745,9 +936,17 @@ def robust_pipeline(path: str, use_ocr: bool = True, use_gpu: bool = False,
         if verbose:
             print(f"[Robust Pipeline] Processing page {page_num + 1}/{num_pages}")
         
-        # Try native PDF text extraction first for PDFs
+        # Try native text extraction based on file type
         page_lines = []
-        if prefer_native_text and path_obj.suffix.lower() == '.pdf' and HAS_PYMUPDF:
+        
+        # DOCX files - use python-docx
+        if prefer_native_text and path_obj.suffix.lower() in ['.docx', '.doc'] and HAS_DOCX:
+            page_lines = extract_text_from_docx(path)
+            if verbose and page_lines:
+                print(f"[Robust Pipeline] Extracted {len(page_lines)} lines using python-docx")
+        
+        # PDF files - use PyMuPDF
+        elif prefer_native_text and path_obj.suffix.lower() == '.pdf' and HAS_PYMUPDF:
             page_lines = extract_text_from_pdf_page(path, page_num)
             if verbose and page_lines:
                 print(f"[Robust Pipeline] Extracted {len(page_lines)} lines using PyMuPDF")

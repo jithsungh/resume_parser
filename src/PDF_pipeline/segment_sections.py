@@ -256,6 +256,13 @@ def _embeddings_allowed() -> bool:
 # Utility
 def clean_for_heading(text: str) -> str:
     t = text or ""
+    
+    # Handle letter-spaced text (e.g., "P R O F I L E" -> "PROFILE")
+    # Check if text has single letters separated by spaces
+    words = t.split()
+    if len(words) > 1 and all(len(w) == 1 and w.isalpha() for w in words):
+        t = ''.join(words)  # Join single letters
+    
     # Normalize common decorative separators
     t = t.replace("•", " ").replace("·", " ").replace("|", " ")
     t = t.replace("&", " and ")  # keep meaning of '&' before stripping

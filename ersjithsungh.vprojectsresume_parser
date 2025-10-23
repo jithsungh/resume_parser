@@ -1,0 +1,25 @@
+[1mdiff --git a/src/PDF_pipeline/get_words.py b/src/PDF_pipeline/get_words.py[m
+[1mindex ff8e903..ab0241b 100644[m
+[1m--- a/src/PDF_pipeline/get_words.py[m
+[1m+++ b/src/PDF_pipeline/get_words.py[m
+[36m@@ -104,8 +104,7 @@[m [mdef _get_words_from_pdf_pymupdf(pdf_path: str) -> List[PageT]:[m
+                 v_ok = (y0 >= sy0 - 1.5) and (y1 <= sy1 + 1.5)[m
+                 if not v_ok:[m
+                     continue[m
+[31m-                overlap = max(0.0, min(float(x1), float(sx1)) - max(float(x0), float(sx0)))[m
+[31m-                if overlap > best_overlap:[m
+[32m+[m[32m                overlap = max(0.0, min(float(x1), float(sx1)) - max(float(x0), float(sx0)))                if overlap > best_overlap:[m
+                     best_overlap = overlap[m
+                     best = sp[m
+             if best is not None:[m
+[36m@@ -129,6 +128,10 @@[m [mdef _get_words_from_pdf_pymupdf(pdf_path: str) -> List[PageT]:[m
+                 "is_bold": bool(is_bold),[m
+             })[m
+ [m
+[32m+[m[32m        # Sort words by reading order (top-to-bottom, left-to-right)[m
+[32m+[m[32m        # Group by rows (similar y-coordinates) then sort by x within each row[m
+[32m+[m[32m        words_out.sort(key=lambda w: (round(w["top"] / 2) * 2, w["x0"]))[m
+[32m+[m
+         pages.append({[m
+             "page_no": int(page_index),[m
+             "width": float(pw),[m

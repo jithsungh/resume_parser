@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from ..core.complete_resume_parser import CompleteResumeParser
 from ..core.name_location_extractor import NameLocationExtractor
+from ..smart_parser import smart_parse_resume
 from .models import (
     ResumeParseResult, NERResult, SectionSegmentResult,
     ExperienceEntry, NEREntity, SectionSegment
@@ -42,7 +43,8 @@ class ResumeParserService:
         
         # Initialize main parser
         self.parser = CompleteResumeParser(self.model_path)
-          # Initialize name/location extractor
+        
+        # Initialize name/location extractor
         self.name_location_extractor = NameLocationExtractor()
         
         # Initialize section splitter
@@ -58,6 +60,49 @@ class ResumeParserService:
             self.section_splitter = None
         
         print("✅ Resume Parser Service initialized!\n")
+    
+    async def smart_parse_pdf_file(
+        self,
+        file_path: str,
+        force_pipeline: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Parse PDF/DOCX using smart layout-aware parser
+        
+        Args:
+            file_path: Path to PDF or DOCX file
+            force_pipeline: Optional - force 'pdf' or 'ocr' pipeline
+            
+        Returns:
+            Dictionary with:
+            - sections: List of extracted sections with lines
+            - metadata: Pipeline used, processing time, etc.
+            - simplified: Simplified JSON output
+        """
+        start_time = time.time()
+        
+        # Run smart parser in thread pool (it's CPU intensive)
+        loop = asyncio.get_event_loop()
+        result, simplified, metadata = await loop.run_in_executor(
+            self._executor,
+            smart_parse_resume,
+            file_path,
+            force_pipeline,
+            300,  # OCR DPI
+            ['en'],  # Languages
+            False  # verbose
+        )
+        
+        processing_time = time.time() - start_time
+        
+        return {
+            'result': result,
+            'simplified': simplified,
+            'metadata': {
+                **metadata,
+                'total_processing_time': round(processing_time, 2)
+            }
+        }
     
     async def parse_resume_text(
         self, 

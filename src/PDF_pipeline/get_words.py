@@ -102,6 +102,7 @@ def _get_words_from_pdf_pymupdf(pdf_path: str) -> List[PageT]:
             for sp in spans:
                 sx0, sy0, sx1, sy1 = sp["bbox"]
                 v_ok = (y0 >= sy0 - 1.5) and (y1 <= sy1 + 1.5)
+                
                 if not v_ok:
                     continue
                 overlap = max(0.0, min(float(x1), float(sx1)) - max(float(x0), float(sx0)))
