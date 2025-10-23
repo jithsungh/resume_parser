@@ -150,14 +150,14 @@ class ResumeParserService:
     async def parse_resume_file(
         self, 
         file_path: str,
-        use_smart_parser: bool = True
+        smart_parser: bool = True
     ) -> ResumeParseResult:
         """
         Parse resume from file fewufjgv
         
         Args:
             file_path: Path to resume file
-            use_smart_parser: Use smart layout-aware parser for PDFs/DOCX (recommended)
+            smart_parser: Use smart layout-aware parser for PDFs/DOCX (recommended)
             
         Returns:
             ResumeParseResult with parsed information
@@ -305,22 +305,24 @@ class ResumeParserService:
             filename=filename,
             processing_time_seconds=round(processing_time, 2)
         )
-      async def segment_sections_from_file(
+    
+    
+    async def segment_sections_from_file(
         self,
         file_path: str,
-        use_smart_parser: bool = True
+        smart_parser: bool = True
     ) -> SectionSegmentResult:
+        
         """
         Segment resume into sections from file with smart strategy selection.
         
         Strategy hierarchy (with fallbacks):
         1. Smart Parser (layout-aware, auto-selects PDF/OCR)
         2. Legacy PDF/DOCX extraction + section splitter
-        3. Basic text extraction + rule-based segmentation
-        
+        3. Basic text extraction + rule-based segmentatio
         Args:
             file_path: Path to resume file (PDF, DOCX, TXT)
-            use_smart_parser: Use smart layout-aware parser (recommended for PDF/DOCX)
+            smart_parser: Use smart layout-aware parser (recommended for PDF/DOCX)
             
         Returns:
             SectionSegmentResult with identified sections and metadata
@@ -333,7 +335,7 @@ class ResumeParserService:
         error_log = []
         
         # STRATEGY 1: Smart Parser (PDF/DOCX only)
-        if use_smart_parser and file_ext in ['.pdf', '.docx', '.doc']:
+        if smart_parser and file_ext in ['.pdf', '.docx', '.doc']:
             try:
                 print(f"[Segmentation] Strategy 1: Trying smart parser for {filename}...")
                 
