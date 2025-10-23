@@ -16,7 +16,24 @@ import json
 
 import src.detect_layout as ld
 from src.PDF_pipeline.pipeline import run_pipeline as run_pdf_pipeline
-from src.IMG_pipeline.pipeline import run_pipeline_ocr
+
+# Lazy import for OCR to avoid OpenCV/EasyOCR import errors on headless servers
+_ocr_pipeline = None
+
+def _get_ocr_pipeline():
+    """Lazy load OCR pipeline only when needed"""
+    global _ocr_pipeline
+    if _ocr_pipeline is None:
+        try:
+            from src.IMG_pipeline.pipeline import run_pipeline_ocr
+            _ocr_pipeline = run_pipeline_ocr
+        except ImportError as e:
+            raise ImportError(
+                f"OCR pipeline not available. Missing dependencies: {e}\n"
+                "On headless Linux servers, install: sudo yum install mesa-libGL (RHEL/CentOS) "
+                "or sudo apt-get install libgl1 (Ubuntu/Debian)"
+            )
+    return _ocr_pipeline
 
 
 def smart_parse_resume(
@@ -90,10 +107,12 @@ def smart_parse_resume(
                 verbose=verbose
             )
             metadata['pipeline_used'] = 'pdf'
-            
         else:  # ocr
             if verbose:
                 print(f"[Smart Parser] Running OCR pipeline (EasyOCR)...")
+            
+            # Get OCR pipeline (lazy load)
+            run_pipeline_ocr = _get_ocr_pipeline()
             
             result, simplified = run_pipeline_ocr(
                 pdf_path=pdf_path,
@@ -308,11 +327,13 @@ def compare_pipelines(pdf_path: str, verbose: bool = True) -> Dict[str, Any]:
         }
         if verbose:
             print(f"  Error: {e}")
-    
-    # OCR Pipeline
+      # OCR Pipeline
     if verbose:
         print(f"\nTesting OCR pipeline...")
     try:
+        # Get OCR pipeline (lazy load)
+        run_pipeline_ocr = _get_ocr_pipeline()
+        
         start = time.time()
         result_ocr, simple_ocr = run_pipeline_ocr(pdf_path, verbose=False, gpu=False)
         ocr_time = time.time() - start
