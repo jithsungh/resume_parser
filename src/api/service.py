@@ -343,7 +343,6 @@ class ResumeParserService:
                 
                 # Check if smart parser actually found sections
                 sections_found = smart_result['result'].get('sections', [])
-                
                 if len(sections_found) > 0:
                     print(f"[Segmentation] ✓ Smart parser succeeded: {len(sections_found)} sections")
                     
@@ -352,7 +351,14 @@ class ResumeParserService:
                     for section in sections_found:
                         section_name = section.get('section_name', 'Unknown')
                         lines = section.get('lines', [])
-                        content = '\n'.join(lines)
+                        
+                        # Lines can be either strings or dicts with 'text' field
+                        if lines and isinstance(lines[0], dict):
+                            # Extract text from dict format: {'text': '...', 'bbox': [...], ...}
+                            content = '\n'.join(line.get('text', '') for line in lines)
+                        else:
+                            # Already strings
+                            content = '\n'.join(lines)
                         
                         section_list.append(
                             SectionSegment(
