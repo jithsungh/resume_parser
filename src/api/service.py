@@ -305,77 +305,192 @@ class ResumeParserService:
             filename=filename,
             processing_time_seconds=round(processing_time, 2)
         )
-    
-    async def segment_sections_from_file(
+      async def segment_sections_from_file(
         self,
         file_path: str,
         use_smart_parser: bool = True
     ) -> SectionSegmentResult:
         """
-        Segment resume into sections from file using smart parser
+        Segment resume into sections from file with smart strategy selection.
+        
+        Strategy hierarchy (with fallbacks):
+        1. Smart Parser (layout-aware, auto-selects PDF/OCR)
+        2. Legacy PDF/DOCX extraction + section splitter
+        3. Basic text extraction + rule-based segmentation
         
         Args:
-            file_path: Path to resume file (PDF, DOCX)
-            use_smart_parser: Use smart layout-aware parser (recommended)
+            file_path: Path to resume file (PDF, DOCX, TXT)
+            use_smart_parser: Use smart layout-aware parser (recommended for PDF/DOCX)
             
         Returns:
-            SectionSegmentResult with identified sections
+            SectionSegmentResult with identified sections and metadata
         """
         start_time = time.time()
         file_ext = Path(file_path).suffix.lower()
         filename = Path(file_path).name
         
-        # Use smart parser for PDFs and DOCX
+        strategy_used = "unknown"
+        error_log = []
+        
+        # STRATEGY 1: Smart Parser (PDF/DOCX only)
         if use_smart_parser and file_ext in ['.pdf', '.docx', '.doc']:
             try:
-                # Use smart parser
+                print(f"[Segmentation] Strategy 1: Trying smart parser for {filename}...")
+                
                 smart_result = await self.smart_parse_pdf_file(file_path, force_pipeline=None)
                 
-                # Convert to SectionSegmentResult format
-                section_list = []
-                for section in smart_result['result'].get('sections', []):
-                    section_name = section.get('section_name', 'Unknown')
-                    lines = section.get('lines', [])
-                    content = '\n'.join(lines)
+                # Check if smart parser actually found sections
+                sections_found = smart_result['result'].get('sections', [])
+                
+                if len(sections_found) > 0:
+                    print(f"[Segmentation] ✓ Smart parser succeeded: {len(sections_found)} sections")
                     
-                    section_list.append(
-                        SectionSegment(
-                            section_name=section_name,
-                            content=content,
-                            confidence=None  # Smart parser doesn't provide confidence scores
+                    # Convert to SectionSegmentResult format
+                    section_list = []
+                    for section in sections_found:
+                        section_name = section.get('section_name', 'Unknown')
+                        lines = section.get('lines', [])
+                        content = '\n'.join(lines)
+                        
+                        section_list.append(
+                            SectionSegment(
+                                section_name=section_name,
+                                content=content,
+                                confidence=None
+                            )
                         )
+                    
+                    processing_time = time.time() - start_time
+                    strategy_used = "smart_parser"
+                    
+                    return SectionSegmentResult(
+                        sections=section_list,
+                        total_sections=len(section_list),
+                        filename=filename,
+                        processing_time_seconds=round(processing_time, 2),
+                        metadata={
+                            'strategy_used': strategy_used,
+                            'pipeline_used': smart_result['metadata'].get('pipeline_used'),
+                            'layout_analysis': smart_result['metadata'].get('layout_analysis'),
+                            'fallback_attempts': error_log
+                        }
                     )
-                
-                processing_time = time.time() - start_time
-                
-                return SectionSegmentResult(
-                    sections=section_list,
-                    total_sections=len(section_list),
-                    filename=filename,
-                    processing_time_seconds=round(processing_time, 2),
-                    metadata={
-                        'smart_parser_used': True,
-                        'pipeline_used': smart_result['metadata'].get('pipeline_used'),
-                        'layout_analysis': smart_result['metadata'].get('layout_analysis')
-                    }
-                )
+                else:
+                    error_msg = "Smart parser returned 0 sections"
+                    print(f"[Segmentation] ⚠️ {error_msg}")
+                    error_log.append({'strategy': 'smart_parser', 'error': error_msg})
+                    
             except Exception as e:
-                # Fallback to legacy segmentation
-                print(f"⚠️ Smart parser failed, falling back to legacy segmentation: {e}")
-                pass
+                error_msg = f"Smart parser failed: {str(e)}"
+                print(f"[Segmentation] ⚠️ {error_msg}")
+                error_log.append({'strategy': 'smart_parser', 'error': error_msg})
         
-        # Legacy segmentation (fallback or for TXT files)
-        if file_ext == '.pdf':
-            text = await self._extract_text_from_pdf(file_path)
-        elif file_ext in ['.docx', '.doc']:
-            text = await self._extract_text_from_docx(file_path)
-        elif file_ext == '.txt':
-            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                text = f.read()
-        else:
-            raise ValueError(f"Unsupported file type: {file_ext}")
+        # STRATEGY 2: Legacy extraction with dynamic thresholds
+        print(f"[Segmentation] Strategy 2: Trying legacy extraction with section splitter...")
         
-        return await self.segment_sections(text, filename)
+        try:
+            # Extract text based on file type
+            if file_ext == '.pdf':
+                text = await self._extract_text_from_pdf(file_path)
+            elif file_ext in ['.docx', '.doc']:
+                text = await self._extract_text_from_docx(file_path)
+            elif file_ext == '.txt':
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    text = f.read()
+            else:
+                raise ValueError(f"Unsupported file type: {file_ext}")
+            
+            # Check if we got meaningful text
+            if not text or len(text.strip()) < 50:
+                error_msg = f"Insufficient text extracted ({len(text)} chars)"
+                print(f"[Segmentation] ⚠️ {error_msg}")
+                error_log.append({'strategy': 'legacy_extraction', 'error': error_msg})
+                raise ValueError(error_msg)
+            
+            print(f"[Segmentation] ✓ Extracted {len(text)} chars, segmenting sections...")
+            
+            # Use section splitter with dynamic thresholds
+            result = await self.segment_sections(text, filename)
+            
+            if result.total_sections > 0:
+                print(f"[Segmentation] ✓ Legacy segmentation succeeded: {result.total_sections} sections")
+                strategy_used = "legacy_extraction"
+                
+                # Add strategy metadata
+                result.metadata = {
+                    'strategy_used': strategy_used,
+                    'text_length': len(text),
+                    'fallback_attempts': error_log
+                }
+                
+                return result
+            else:
+                error_msg = "Section splitter returned 0 sections"
+                print(f"[Segmentation] ⚠️ {error_msg}")
+                error_log.append({'strategy': 'legacy_extraction', 'error': error_msg})
+                
+        except Exception as e:
+            error_msg = f"Legacy extraction failed: {str(e)}"
+            print(f"[Segmentation] ⚠️ {error_msg}")
+            error_log.append({'strategy': 'legacy_extraction', 'error': error_msg})
+        
+        # STRATEGY 3: Basic fallback - return whole document as one section
+        print(f"[Segmentation] Strategy 3: Using basic fallback (whole document)")
+        
+        try:
+            # Try to get any text we can
+            if file_ext == '.pdf':
+                text = await self._extract_text_from_pdf(file_path)
+            elif file_ext in ['.docx', '.doc']:
+                text = await self._extract_text_from_docx(file_path)
+            elif file_ext == '.txt':
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    text = f.read()
+            else:
+                text = ""
+            
+            processing_time = time.time() - start_time
+            strategy_used = "basic_fallback"
+            
+            print(f"[Segmentation] ✓ Basic fallback: 1 section ({len(text)} chars)")
+            
+            return SectionSegmentResult(
+                sections=[
+                    SectionSegment(
+                        section_name="Document",
+                        content=text,
+                        confidence=0.5
+                    )
+                ],
+                total_sections=1,
+                filename=filename,
+                processing_time_seconds=round(processing_time, 2),
+                metadata={
+                    'strategy_used': strategy_used,
+                    'text_length': len(text),
+                    'fallback_attempts': error_log,
+                    'warning': 'All segmentation strategies failed, returning whole document'
+                }
+            )
+            
+        except Exception as e:
+            # Absolute last resort
+            processing_time = time.time() - start_time
+            error_msg = f"All strategies failed including basic fallback: {str(e)}"
+            print(f"[Segmentation] ✗ {error_msg}")
+            error_log.append({'strategy': 'basic_fallback', 'error': error_msg})
+            
+            return SectionSegmentResult(
+                sections=[],
+                total_sections=0,
+                filename=filename,
+                processing_time_seconds=round(processing_time, 2),
+                metadata={
+                    'strategy_used': 'failed',
+                    'fallback_attempts': error_log,
+                    'error': error_msg
+                }
+            )
     
     async def extract_contact_info(
         self, 

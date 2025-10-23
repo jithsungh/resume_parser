@@ -14,7 +14,7 @@ from pathlib import Path
 import time
 import json
 
-import src.detect_layout as ld
+from src.layout_detector import detect_resume_layout
 from src.PDF_pipeline.pipeline import run_pipeline as run_pdf_pipeline
 
 # Lazy import for OCR to avoid OpenCV/EasyOCR import errors on headless servers
@@ -80,12 +80,12 @@ def smart_parse_resume(
         use_pipeline = force_pipeline.lower()
         if verbose:
             print(f"[Smart Parser] Forced to use {use_pipeline.upper()} pipeline")
-        metadata['layout_analysis'] = {'forced': True, 'pipeline': use_pipeline}
+        metadata['layout_analysis'] = {'forced': True, 'pipeline': use_pipeline}    
     else:
         if verbose:
             print(f"[Smart Parser] Detecting layout...")
         
-        analysis = ld.detect_resume_layout(pdf_path)
+        analysis = detect_resume_layout(pdf_path)
         use_pipeline = analysis['recommended_pipeline']
         metadata['layout_analysis'] = analysis
         
@@ -289,11 +289,10 @@ def compare_pipelines(pdf_path: str, verbose: bool = True) -> Dict[str, Any]:
         'ocr_pipeline': {},
         'layout_analysis': {}
     }
-    
-    # Layout detection
+      # Layout detection
     if verbose:
         print(f"Analyzing layout...")
-    analysis = ld.detect_resume_layout(pdf_path)
+    analysis = detect_resume_layout(pdf_path)
     comparison['layout_analysis'] = analysis
     
     if verbose:

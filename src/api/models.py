@@ -43,6 +43,8 @@ class ResumeParseResult(BaseModel):
     experiences: List[ExperienceEntry] = []
     filename: Optional[str] = None
     processing_time_seconds: Optional[float] = None
+    metadata: Optional[Dict[str, Any]] = None  # Additional metadata from smart parser
+    error: Optional[str] = None  # Error message if parsing failed
 
 
 class NEREntity(BaseModel):
@@ -77,6 +79,7 @@ class SectionSegmentResult(BaseModel):
     total_sections: int
     filename: Optional[str] = None
     processing_time_seconds: Optional[float] = None
+    metadata: Optional[Dict[str, Any]] = None  # Additional metadata from smart parser
 
 
 class BatchProcessRequest(BaseModel):
