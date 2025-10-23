@@ -421,6 +421,7 @@ class ResumeParser:
 
 
 # Convenience function
+# hi
 def parse_resume(file_path: str, verbose: bool = False) -> ParsingResult:
     """
     Quick parse function for single resume.
