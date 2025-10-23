@@ -146,24 +146,63 @@ class ResumeParserService:
             filename=filename,
             processing_time_seconds=round(processing_time, 2)
         )
-    
-    async def parse_resume_file(
+      async def parse_resume_file(
         self, 
-        file_path: str
+        file_path: str,
+        use_smart_parser: bool = True
     ) -> ResumeParseResult:
         """
         Parse resume from file
         
         Args:
             file_path: Path to resume file
+            use_smart_parser: Use smart layout-aware parser for PDFs/DOCX (recommended)
             
         Returns:
             ResumeParseResult with parsed information
         """
-        # Extract text based on file type
         file_ext = Path(file_path).suffix.lower()
         filename = Path(file_path).name
         
+        # Use smart parser for PDFs and DOCX (recommended)
+        if use_smart_parser and file_ext in ['.pdf', '.docx', '.doc']:
+            try:
+                # Use smart parser for better section extraction
+                smart_result = await self.smart_parse_pdf_file(file_path, force_pipeline=None)
+                
+                # Extract structured data from smart parser output
+                sections_dict = {}
+                for section in smart_result['result'].get('sections', []):
+                    section_name = section.get('section_name', 'Unknown')
+                    lines = section.get('lines', [])
+                    sections_dict[section_name] = '\n'.join(lines)
+                
+                # Combine all text for NER-based parsing
+                all_text = '\n\n'.join(
+                    f"=== {name} ===\n{content}" 
+                    for name, content in sections_dict.items()
+                )
+                
+                # Run NER-based parser on the text
+                result = await self.parse_resume_text(all_text, filename)
+                
+                # Enhance result with smart parser metadata
+                result.metadata = {
+                    'smart_parser_used': True,
+                    'pipeline_used': smart_result['metadata'].get('pipeline_used'),
+                    'sections_detected': len(smart_result['result'].get('sections', [])),
+                    'layout_complexity': smart_result['metadata'].get('layout_analysis', {}).get('layout_complexity'),
+                    'num_columns': smart_result['metadata'].get('layout_analysis', {}).get('num_columns')
+                }
+                
+                return result
+                
+            except Exception as e:
+                # Fallback to legacy parser if smart parser fails
+                print(f"⚠️ Smart parser failed, falling back to legacy parser: {e}")
+                pass  # Continue to legacy parser below
+        
+        # Legacy parser (fallback or for TXT files)
         if file_ext == '.pdf':
             text = await self._extract_text_from_pdf(file_path)
         elif file_ext in ['.docx', '.doc']:
@@ -265,6 +304,77 @@ class ResumeParserService:
             filename=filename,
             processing_time_seconds=round(processing_time, 2)
         )
+    
+    async def segment_sections_from_file(
+        self,
+        file_path: str,
+        use_smart_parser: bool = True
+    ) -> SectionSegmentResult:
+        """
+        Segment resume into sections from file using smart parser
+        
+        Args:
+            file_path: Path to resume file (PDF, DOCX)
+            use_smart_parser: Use smart layout-aware parser (recommended)
+            
+        Returns:
+            SectionSegmentResult with identified sections
+        """
+        start_time = time.time()
+        file_ext = Path(file_path).suffix.lower()
+        filename = Path(file_path).name
+        
+        # Use smart parser for PDFs and DOCX
+        if use_smart_parser and file_ext in ['.pdf', '.docx', '.doc']:
+            try:
+                # Use smart parser
+                smart_result = await self.smart_parse_pdf_file(file_path, force_pipeline=None)
+                
+                # Convert to SectionSegmentResult format
+                section_list = []
+                for section in smart_result['result'].get('sections', []):
+                    section_name = section.get('section_name', 'Unknown')
+                    lines = section.get('lines', [])
+                    content = '\n'.join(lines)
+                    
+                    section_list.append(
+                        SectionSegment(
+                            section_name=section_name,
+                            content=content,
+                            confidence=None  # Smart parser doesn't provide confidence scores
+                        )
+                    )
+                
+                processing_time = time.time() - start_time
+                
+                return SectionSegmentResult(
+                    sections=section_list,
+                    total_sections=len(section_list),
+                    filename=filename,
+                    processing_time_seconds=round(processing_time, 2),
+                    metadata={
+                        'smart_parser_used': True,
+                        'pipeline_used': smart_result['metadata'].get('pipeline_used'),
+                        'layout_analysis': smart_result['metadata'].get('layout_analysis')
+                    }
+                )
+            except Exception as e:
+                # Fallback to legacy segmentation
+                print(f"⚠️ Smart parser failed, falling back to legacy segmentation: {e}")
+                pass
+        
+        # Legacy segmentation (fallback or for TXT files)
+        if file_ext == '.pdf':
+            text = await self._extract_text_from_pdf(file_path)
+        elif file_ext in ['.docx', '.doc']:
+            text = await self._extract_text_from_docx(file_path)
+        elif file_ext == '.txt':
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                text = f.read()
+        else:
+            raise ValueError(f"Unsupported file type: {file_ext}")
+        
+        return await self.segment_sections(text, filename)
     
     async def extract_contact_info(
         self, 
