@@ -146,13 +146,14 @@ class ResumeParserService:
             filename=filename,
             processing_time_seconds=round(processing_time, 2)
         )
-      async def parse_resume_file(
+    
+    async def parse_resume_file(
         self, 
         file_path: str,
         use_smart_parser: bool = True
     ) -> ResumeParseResult:
         """
-        Parse resume from file
+        Parse resume from file fewufjgv
         
         Args:
             file_path: Path to resume file
