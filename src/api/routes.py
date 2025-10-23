@@ -254,13 +254,12 @@ async def segment_sections(
             content = await file.read()
             tmp_file.write(content)
             tmp_file_path = tmp_file.name
-        
         try:
             # Use smart parser for PDF/DOCX files (recommended)
             if use_smart_parser and file_ext in ['.pdf', '.docx', '.doc']:
                 result = await parser_service.segment_sections_from_file(
                     tmp_file_path,
-                    use_smart_parser=True
+                    smart_parser=True
                 )
                 return result
             

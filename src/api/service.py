@@ -162,11 +162,11 @@ class ResumeParserService:
         Returns:
             ResumeParseResult with parsed information
         """
-        file_ext = Path(file_path).suffix.lower()
+        file_ext = Path(file_path).suffix.lower()        
         filename = Path(file_path).name
         
         # Use smart parser for PDFs and DOCX (recommended)
-        if use_smart_parser and file_ext in ['.pdf', '.docx', '.doc']:
+        if smart_parser and file_ext in ['.pdf', '.docx', '.doc']:
             try:
                 # Use smart parser for better section extraction
                 smart_result = await self.smart_parse_pdf_file(file_path, force_pipeline=None)
