@@ -28,7 +28,7 @@ import time
 
 from .document_detector import DocumentDetector, DocumentType
 from .word_extractor import WordExtractor, WordMetadata
-from .layout_detector_histogram import LayoutDetector, LayoutType
+from .layout_detector_y_overlap import EnhancedLayoutDetector as LayoutDetector, LayoutType
 from .column_segmenter import ColumnSegmenter, Column
 from .line_section_grouper import LineGrouper, SectionDetector, Line, Section
 from .unknown_section_detector import UnknownSectionDetector, UnknownSection

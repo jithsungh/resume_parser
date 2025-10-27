@@ -277,7 +277,7 @@ def _resolve_data_path() -> tuple[Path, str]:
 
     # Try JSON files first (newer format)
     json_candidates = [
-        ROOT_DIR / "outputs" / "batch_results_20251027_163813.json",
+        ROOT_DIR / "outputs" / "batch_results_20251027_195309.json",
         ROOT_DIR / "batch_results.json",
         ROOT_DIR / "outputs" / "batch_results.json",
     ]

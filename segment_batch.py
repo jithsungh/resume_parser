@@ -151,20 +151,18 @@ def save_batch_to_excel(results: List[Dict], output_path: Path):
         
         # Define standard section columns in order
         section_columns = [
+            'Experience',
             'Contact Information',
             'Summary',
             'Skills',
-            'Experience',
             'Projects',
             'Education',
             'Certifications',
             'Achievements',
             'Publications',
             'Research',
-            'Languages',
             'Volunteer',
             'Hobbies',
-            'References',
             'Declarations',
             'Unknown Sections'
         ]

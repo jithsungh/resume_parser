@@ -318,15 +318,48 @@ class SectionDetector:
         
         Handles:
         - Letter-spaced text (e.g., "P R O F I L E" -> "PROFILE")
+        - Spaced keywords (e.g., "E X P E R I E N C E" -> "EXPERIENCE")
+        - Mixed spacing (e.g., "E Xperience" -> "EXPERIENCE")
         - Decorative separators
         - Special characters
         """
         t = text or ""
         
-        # Handle letter-spaced text
+        # Handle letter-spaced text (e.g., "P R O F I L E")
         words = t.split()
         if len(words) > 1 and all(len(w) == 1 and w.isalpha() for w in words):
             t = ''.join(words)
+        else:
+            # Handle mixed spacing like "E Xperience" or "E X P E R I E N C E"
+            # Check if words contain single letters mixed with multi-letter words
+            has_single_letters = any(len(w) == 1 and w.isalpha() for w in words)
+            if has_single_letters and len(words) > 1:
+                # Try to reconstruct by removing spaces between single letters
+                # and combining them with adjacent words
+                reconstructed = []
+                i = 0
+                while i < len(words):
+                    current = words[i]
+                    # If single letter, keep collecting until we hit a multi-letter word
+                    if len(current) == 1 and current.isalpha():
+                        letters = [current]
+                        i += 1
+                        # Collect consecutive single letters
+                        while i < len(words) and len(words[i]) == 1 and words[i].isalpha():
+                            letters.append(words[i])
+                            i += 1
+                        # If next word exists and is multi-letter, append it
+                        if i < len(words) and len(words[i]) > 1:
+                            letters.append(words[i])
+                            i += 1
+                        reconstructed.append(''.join(letters))
+                    else:
+                        reconstructed.append(current)
+                        i += 1
+                
+                # Use reconstructed if it's simpler (fewer words)
+                if len(reconstructed) < len(words):
+                    t = ' '.join(reconstructed)
         
         # Normalize decorators
         t = t.replace("•", " ").replace("·", " ").replace("|", " ")
@@ -594,7 +627,7 @@ class SectionDetector:
         max_similarity = np.max(similarities)
         
         return max_similarity
-    
+      
     def _match_section_name(self, text: str) -> str:
         """
         Match header text to known section name
@@ -605,11 +638,18 @@ class SectionDetector:
         Returns:
             Matched section name
         """
-        text_lower = text.lower().strip().rstrip(':')
+        text_clean = self._clean_for_heading(text)
+        text_lower = text_clean.lower().strip().rstrip(':')
         
         # Exact match using database mapping
         if text_lower in SECTION_MAPPING:
             return SECTION_MAPPING[text_lower]
+        
+        # Despaced match (handles "E X P E R I E N C E")
+        text_despaced = self._despaced(text_lower)
+        for variant, canonical in SECTION_MAPPING.items():
+            if self._despaced(variant) == text_despaced and text_despaced:
+                return canonical
         
         # Partial match
         for variant, canonical in SECTION_MAPPING.items():

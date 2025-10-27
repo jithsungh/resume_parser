@@ -201,7 +201,7 @@ class LayoutDetector:
             smoothed[bin_idx] = sum(values) / len(values)
         
         return smoothed
-    
+      
     def _detect_columns_by_gaps(self, words: List[WordMetadata], page_width: float) -> List[Tuple[float, float]]:
         """
         Detect column boundaries by finding vertical gaps in word positions.
@@ -248,12 +248,13 @@ class LayoutDetector:
         # If there's a large gap (>= 75th percentile), it's likely a column separator
         percentile_75 = gaps_sorted[int(len(gaps_sorted) * 0.75)]
         percentile_90 = gaps_sorted[int(len(gaps_sorted) * 0.90)]
+        percentile_60 = gaps_sorted[int(len(gaps_sorted) * 0.60)]
         
         # Dynamic threshold with rewards/penalties
         if self.adaptive_threshold:
             # Reward: If max gap is significantly larger than median (3x+), lower threshold
             if max_gap > median_gap * 3:
-                gap_threshold = max(self.min_gap_width, percentile_75)
+                gap_threshold = max(self.min_gap_width * 0.6, percentile_60)  # More aggressive for narrow columns
             # Penalty: If gaps are very uniform, require larger threshold
             elif max_gap < median_gap * 2:
                 gap_threshold = max(self.min_gap_width * 1.5, percentile_90)
@@ -263,7 +264,7 @@ class LayoutDetector:
             gap_threshold = self.min_gap_width
         
         if self.verbose:
-            print(f"    Gap analysis: median={median_gap:.1f}, p75={percentile_75:.1f}, "
+            print(f"    Gap analysis: median={median_gap:.1f}, p60={percentile_60:.1f}, p75={percentile_75:.1f}, "
                   f"p90={percentile_90:.1f}, max={max_gap:.1f}, threshold={gap_threshold:.1f}")
         
         # Step 3: Find significant gaps that could be column separators
@@ -279,6 +280,22 @@ class LayoutDetector:
                 # Mark the mid-point of the gap as separator
                 separator_x = (right_edge + next_left_edge) / 2
                 column_separators.append(separator_x)
+        
+        # Step 3.5: FALLBACK - If no columns detected but there are large gaps, retry with reduced threshold
+        if not column_separators and max_gap > self.min_gap_width * 0.5:
+            # Use a more aggressive threshold for narrow-column layouts
+            fallback_threshold = max(self.min_gap_width * 0.5, percentile_60)
+            if self.verbose:
+                print(f"    No columns found, trying fallback threshold: {fallback_threshold:.1f}")
+            
+            for i in range(len(x_positions) - 1):
+                right_edge = x_positions[i][1]
+                next_left_edge = x_positions[i + 1][0]
+                gap = next_left_edge - right_edge
+                
+                if gap >= fallback_threshold:
+                    separator_x = (right_edge + next_left_edge) / 2
+                    column_separators.append(separator_x)
         
         if not column_separators:
             return [(0, page_width)]
