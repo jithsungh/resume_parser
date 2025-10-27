@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from ..core.complete_resume_parser import CompleteResumeParser
 from ..core.name_location_extractor import NameLocationExtractor
-from ..smart_parser import smart_parse_resume
+from ..core.unified_resume_pipeline import UnifiedResumeParser
 from .models import (
     ResumeParseResult, NERResult, SectionSegmentResult,
     ExperienceEntry, NEREntity, SectionSegment
@@ -35,17 +35,31 @@ class ResumeParserService:
         self.parser = None
         self.name_location_extractor = None
         self.section_splitter = None
+        self.unified_parser = None  # NEW: Unified pipeline parser
         self._executor = ThreadPoolExecutor(max_workers=4)
         
     def initialize(self):
         """Initialize all components"""
         print("🚀 Initializing Resume Parser Service...")
         
-        # Initialize main parser
+        # Initialize main NER parser
         self.parser = CompleteResumeParser(self.model_path)
         
         # Initialize name/location extractor
         self.name_location_extractor = NameLocationExtractor()
+        
+        # Initialize unified pipeline parser
+        try:
+            self.unified_parser = UnifiedResumeParser(
+                use_ocr_if_scanned=True,
+                use_embeddings=True,
+                save_debug=False,
+                verbose=False
+            )
+            print("✅ Unified pipeline parser initialized")
+        except Exception as e:
+            print(f"⚠️  Unified parser initialization failed: {e}")
+            self.unified_parser = None
         
         # Initialize section splitter
         if SECTION_SPLITTER_AVAILABLE:
@@ -60,18 +74,17 @@ class ResumeParserService:
             self.section_splitter = None
         
         print("✅ Resume Parser Service initialized!\n")
-    
     async def smart_parse_pdf_file(
         self,
         file_path: str,
         force_pipeline: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Parse PDF/DOCX using smart layout-aware parser
+        Parse PDF/DOCX using unified resume parser (new refactored pipeline)
         
         Args:
             file_path: Path to PDF or DOCX file
-            force_pipeline: Optional - force 'pdf' or 'ocr' pipeline
+            force_pipeline: Optional - not used (kept for backward compatibility)
             
         Returns:
             Dictionary with:
@@ -81,26 +94,48 @@ class ResumeParserService:
         """
         start_time = time.time()
         
-        # Run smart parser in thread pool (it's CPU intensive)
+        if not self.unified_parser:
+            raise ValueError("Unified parser not initialized")
+        
+        # Run unified parser in thread pool (it's CPU intensive)
         loop = asyncio.get_event_loop()
-        result, simplified, metadata = await loop.run_in_executor(
+        result = await loop.run_in_executor(
             self._executor,
-            smart_parse_resume,
-            file_path,
-            force_pipeline,
-            300,  # OCR DPI
-            ['en'],  # Languages
-            False  # verbose
+            self.unified_parser.parse,
+            file_path
         )
         
         processing_time = time.time() - start_time
         
+        # Convert PipelineResult to dict format
+        result_dict = result.to_dict(include_debug=False)
+        
+        # Create simplified format for backward compatibility
+        simplified = {
+            'file_name': result_dict.get('file_name'),
+            'sections': {},
+            'statistics': result_dict.get('statistics', {})
+        }
+        
+        # Group sections by name
+        for section in result_dict.get('sections', []):
+            section_name = section.get('section_name', 'Unknown')
+            content = section.get('content', '')
+            
+            if section_name in simplified['sections']:
+                simplified['sections'][section_name] += '\n' + content
+            else:
+                simplified['sections'][section_name] = content
+        
         return {
-            'result': result,
+            'result': result_dict,
             'simplified': simplified,
             'metadata': {
-                **metadata,
-                'total_processing_time': round(processing_time, 2)
+                'pipeline_used': 'unified_v2',
+                'document_type': result_dict.get('document_type', {}),
+                'layouts': result_dict.get('layouts', []),
+                'total_processing_time': round(processing_time, 2),
+                'pipeline_version': result_dict.get('metadata', {}).get('pipeline_version', '2.0.0')
             }
         }
     
@@ -164,19 +199,20 @@ class ResumeParserService:
         """
         file_ext = Path(file_path).suffix.lower()        
         filename = Path(file_path).name
-        
-        # Use smart parser for PDFs and DOCX (recommended)
+          # Use smart parser for PDFs and DOCX (recommended)
         if smart_parser and file_ext in ['.pdf', '.docx', '.doc']:
             try:
-                # Use smart parser for better section extraction
+                # Use unified parser for better section extraction
                 smart_result = await self.smart_parse_pdf_file(file_path, force_pipeline=None)
                 
-                # Extract structured data from smart parser output
+                # Extract structured data from unified parser output
                 sections_dict = {}
                 for section in smart_result['result'].get('sections', []):
                     section_name = section.get('section_name', 'Unknown')
-                    lines = section.get('lines', [])
-                    sections_dict[section_name] = '\n'.join(lines)
+                    # Use 'content' field from new unified pipeline
+                    content = section.get('content', '')
+                    if content:
+                        sections_dict[section_name] = content
                 
                 # Combine all text for NER-based parsing
                 all_text = '\n\n'.join(
@@ -187,20 +223,23 @@ class ResumeParserService:
                 # Run NER-based parser on the text
                 result = await self.parse_resume_text(all_text, filename)
                 
-                # Enhance result with smart parser metadata
+                # Enhance result with unified parser metadata
                 result.metadata = {
-                    'smart_parser_used': True,
-                    'pipeline_used': smart_result['metadata'].get('pipeline_used'),
+                    'unified_parser_used': True,
+                    'pipeline_version': smart_result['metadata'].get('pipeline_version', '2.0.0'),
                     'sections_detected': len(smart_result['result'].get('sections', [])),
-                    'layout_complexity': smart_result['metadata'].get('layout_analysis', {}).get('layout_complexity'),
-                    'num_columns': smart_result['metadata'].get('layout_analysis', {}).get('num_columns')
+                    'total_pages': smart_result['result'].get('statistics', {}).get('total_pages'),
+                    'total_columns': smart_result['result'].get('statistics', {}).get('total_columns'),
+                    'document_type': smart_result['result'].get('document_type', {})
                 }
                 
                 return result
                 
             except Exception as e:
-                # Fallback to legacy parser if smart parser fails
-                print(f"⚠️ Smart parser failed, falling back to legacy parser: {e}")
+                # Fallback to legacy parser if unified parser fails
+                print(f"⚠️ Unified parser failed, falling back to legacy parser: {e}")
+                import traceback
+                traceback.print_exc()
                 pass  # Continue to legacy parser below
         
         # Legacy parser (fallback or for TXT files)
