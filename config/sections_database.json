@@ -36,8 +36,7 @@
       ],
       "confidence_threshold": 0.8,
       "embedding_cluster_id": null
-    },
-    "Skills": {
+    },    "Skills": {
       "variants": [
         "skills",
         "key skills",
@@ -54,6 +53,7 @@
         "language skills",
         "computer skills",
         "programming languages",
+        "languages",
         "tools",
         "tools and technologies",
         "technologies",

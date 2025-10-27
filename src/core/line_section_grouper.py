@@ -342,6 +342,63 @@ class SectionDetector:
             return ""
         return re.sub(r"[^a-z0-9]+", "", text.lower())
     
+    def _merge_duplicate_sections(self, sections: List[Section]) -> List[Section]:
+        """
+        Merge consecutive sections with the same canonical name.
+        
+        For example:
+        - "Experience" (contact info) + "Experience" (work history) -> single "Experience"
+        - "Skills" (languages) + "Skills" (technical) -> single "Skills"
+        
+        Args:
+            sections: List of sections
+            
+        Returns:
+            Merged list of sections with duplicates combined
+        """
+        if not sections:
+            return sections
+        
+        merged = []
+        current_merged = sections[0]
+        
+        for i in range(1, len(sections)):
+            next_section = sections[i]
+            
+            # Check if section names match (case-insensitive)
+            if current_merged.section_name.lower() == next_section.section_name.lower():
+                # Merge: combine content lines
+                # Keep the header from the first occurrence unless it doesn't have one
+                if current_merged.header_line is None and next_section.header_line is not None:
+                    current_merged.header_line = next_section.header_line
+                
+                # Add all content lines from next section
+                current_merged.content_lines.extend(next_section.content_lines)
+                
+                # Also add the header of the duplicate as content if it exists
+                if next_section.header_line is not None:
+                    # Insert the duplicate header as a content line at the start of merged content
+                    current_merged.content_lines.insert(
+                        len(current_merged.content_lines) - len(next_section.content_lines),
+                        next_section.header_line
+                    )
+                
+                if self.verbose:
+                    print(f"    ✓ Merged duplicate '{next_section.section_name}' section")
+            else:
+                # Different section - save current and start new
+                merged.append(current_merged)
+                current_merged = next_section
+        
+        # Add the last section
+        merged.append(current_merged)
+        
+        # Re-number section IDs
+        for i, section in enumerate(merged):
+            section.section_id = i
+        
+        return merged
+    
     def detect_sections(self, lines: List[Line]) -> List[Section]:
         """
         Detect sections from lines
@@ -392,18 +449,19 @@ class SectionDetector:
                     column_id=line.column_id,
                     section_name=section_name,
                     header_line=line
-                )
+                )                
                 section_id += 1
                 lines_processed += 1
             else:
                 # Add to current section
                 if current_section is None:
                     # Create default section for content before first header
+                    # This is typically contact information at the top
                     current_section = Section(
                         section_id=section_id,
                         page=line.page,
                         column_id=line.column_id,
-                        section_name="Header/Contact",
+                        section_name="Contact Information",
                         header_line=None
                     )
                     section_id += 1
@@ -414,6 +472,9 @@ class SectionDetector:
         # Add last section (always add)
         if current_section is not None:
             sections.append(current_section)
+        
+        # Step 3: Merge duplicate sections
+        sections = self._merge_duplicate_sections(sections)
         
         # Verification: Check all lines are accounted for
         total_lines_in_sections = sum(
@@ -428,13 +489,14 @@ class SectionDetector:
             print(f"     Missing: {len(lines) - total_lines_in_sections}")
         
         if self.verbose:
-            print(f"  Detected {len(sections)} sections")
+            print(f"  Detected {len(sections)} sections (after merging duplicates)")
             print(f"  Total lines processed: {total_lines_in_sections}/{len(lines)}")
             for section in sections:
                 total = len(section.content_lines) + (1 if section.header_line else 0)
                 print(f"    - {section.section_name}: {total} lines ({len(section.content_lines)} content + {1 if section.header_line else 0} header)")
         
         return sections
+    
     def _is_section_header(self, line: Line) -> Tuple[bool, float]:
         """
         Check if line is a section header using STRICT keyword matching
