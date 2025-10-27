@@ -74,7 +74,7 @@
       }
       .layout {
         display: grid;
-        grid-template-columns: 1.2fr 1fr;
+        grid-template-columns: 1fr 1.2fr;
         gap: 12px;
         height: calc(100vh - 60px);
         padding: 12px;
@@ -175,22 +175,34 @@
     </header>
     <div class="layout">
       <div class="pane">
-        <h2>PDF</h2>
-        <div class="content">
-          <iframe id="pdfFrame" title="PDF Viewer"></iframe>
-        </div>
-      </div>
-      <div class="pane">
-        <h2>Segmented</h2>
+        <h2>Segmented Sections</h2>
         <div class="content" id="segPane">
           <div id="contact" class="contact"></div>
           <div id="sections"></div>
         </div>
       </div>
+      <div class="pane">
+        <h2>PDF Preview</h2>
+        <div class="content">
+          <div
+            id="docxNotice"
+            style="
+              display: none;
+              padding: 20px;
+              text-align: center;
+              color: var(--muted);
+            "
+          >
+            <p>DOCX files cannot be previewed in browser.</p>
+            <p>Click "Open PDF" to download and view.</p>
+          </div>
+          <iframe id="pdfFrame" title="PDF Viewer"></iframe>
+        </div>
+      </div>
     </div>
-
     <script>
       const pdfFrame = document.getElementById("pdfFrame");
+      const docxNotice = document.getElementById("docxNotice");
       const prevBtn = document.getElementById("prevBtn");
       const nextBtn = document.getElementById("nextBtn");
       const pos = document.getElementById("pos");
@@ -221,9 +233,24 @@
         render();
       }
 
-      function setPdf(originalIndex) {
-        pdfFrame.src = `/pdf/${originalIndex}`;
-        openPdf.href = `/pdf/${originalIndex}`;
+      function setPdf(originalIndex, filename) {
+        const url = `/pdf/${originalIndex}`;
+        const ext = filename.split(".").pop().toLowerCase();
+
+        if (ext === "docx" || ext === "doc") {
+          // Show notice for DOCX files
+          pdfFrame.style.display = "none";
+          docxNotice.style.display = "block";
+          pdfFrame.removeAttribute("src");
+        } else {
+          // Show iframe for PDF and images
+          pdfFrame.style.display = "block";
+          docxNotice.style.display = "none";
+          pdfFrame.src = url;
+        }
+
+        openPdf.href = url;
+        openPdf.download = filename;
       }
 
       function renderContact(c) {
@@ -292,12 +319,13 @@
           sectionsBox.appendChild(wrap);
         });
       }
-
       function render() {
         const total = rows.length;
         if (total === 0) {
           pos.textContent = "0 / 0";
           pdfFrame.removeAttribute("src");
+          pdfFrame.style.display = "none";
+          docxNotice.style.display = "none";
           sectionsBox.innerHTML = "";
           contactBox.innerHTML = '<span class="muted">No rows</span>';
           return;
@@ -308,7 +336,7 @@
         jumpSel.value = String(idx);
         const row = rows[idx];
         // Use server-provided original index to keep PDF and details in sync
-        setPdf(row.i);
+        setPdf(row.i, row.filename);
         renderContact(row.contact);
         renderSections(row.sections);
         prevBtn.disabled = idx === 0;

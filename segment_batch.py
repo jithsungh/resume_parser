@@ -145,93 +145,110 @@ def save_batch_to_json(results: List[Dict], output_path: Path):
 
 
 def save_batch_to_excel(results: List[Dict], output_path: Path):
-    """Save batch results to Excel with multiple sheets"""
+    """Save batch results to Excel - one resume per row with sections as columns"""
     try:
         import pandas as pd
         
-        # Sheet 1: Summary
-        summary_rows = []
-        for r in results:
-            if r['success']:
-                result_data = r['result']
-                stats = result_data.get('statistics', {})
-                
-                summary_row = {
-                    'File Name': r['file_name'],
-                    'File Path': r['file_path'],
-                    'Success': 'Yes',
-                    'Pages': stats.get('total_pages', 0),
-                    'Words': stats.get('total_words', 0),
-                    'Sections': stats.get('total_sections', 0),
-                    'Unknown Sections': stats.get('unknown_sections_count', 0),
-                    'Processing Time (s)': result_data.get('metadata', {}).get('processing_time', 0)
-                }
-            else:
-                summary_row = {
-                    'File Name': r['file_name'],
-                    'File Path': r['file_path'],
-                    'Success': 'No',
-                    'Error': r.get('error', 'Unknown error')
-                }
-            
-            summary_rows.append(summary_row)
+        # Define standard section columns in order
+        section_columns = [
+            'Contact Information',
+            'Summary',
+            'Skills',
+            'Experience',
+            'Projects',
+            'Education',
+            'Certifications',
+            'Achievements',
+            'Publications',
+            'Research',
+            'Languages',
+            'Volunteer',
+            'Hobbies',
+            'References',
+            'Declarations',
+            'Unknown Sections'
+        ]
         
-        summary_df = pd.DataFrame(summary_rows)
-        
-        # Sheet 2: Detailed sections
-        section_rows = []
+        rows = []
         for r in results:
             if not r['success']:
+                # Add failed row with error
+                row = {
+                    'File Name': r['file_name'],
+                    'File Path': r['file_path'],
+                    'Error': r.get('error', 'Unknown error')
+                }
+                rows.append(row)
                 continue
             
             result_data = r['result']
             sections = result_data.get('sections', [])
+            unknown_sections_list = result_data.get('unknown_sections', [])
             
+            # Initialize row with file info
+            row = {
+                'File Name': r['file_name'],
+                'File Path': r['file_path']
+            }
+            
+            # Group sections by section name
+            sections_dict = {}
             for section in sections:
-                section_row = {
-                    'File Name': r['file_name'],
-                    'Section Name': section.get('section_name', ''),
-                    'Page': section.get('page', 0) + 1,
-                    'Column': section.get('column_id', 0) + 1,
-                    'Line Count': section.get('line_count', 0),
-                    'Content Length': len(section.get('content', '')),
-                    'Content Preview': section.get('content', '')[:200],
-                    'Full Content': section.get('content', '')
-                }
-                section_rows.append(section_row)
-        
-        sections_df = pd.DataFrame(section_rows)
-        
-        # Sheet 3: Unknown sections
-        unknown_rows = []
-        for r in results:
-            if not r['success']:
-                continue
+                section_name = section.get('section_name', 'Unknown')
+                content = section.get('content', '')
+                
+                # Append content if section appears multiple times
+                if section_name in sections_dict:
+                    sections_dict[section_name] += '\n' + content
+                else:
+                    sections_dict[section_name] = content
             
-            result_data = r['result']
-            unknowns = result_data.get('unknown_sections', [])
+            # Add each section column
+            for col in section_columns:
+                if col == 'Unknown Sections':
+                    # Combine all unknown sections
+                    if unknown_sections_list:
+                        unknown_content = []
+                        for unk in unknown_sections_list:
+                            unk_name = unk.get('section_name', '')
+                            unk_reason = unk.get('reason', '')
+                            unknown_content.append(f"{unk_name} ({unk_reason})")
+                        row[col] = '\n'.join(unknown_content)
+                    else:
+                        row[col] = ''
+                else:
+                    # Find matching section (case-insensitive)
+                    content = ''
+                    for sec_name, sec_content in sections_dict.items():
+                        if sec_name.lower() == col.lower():
+                            content = sec_content
+                            break
+                    row[col] = content
             
-            for unk in unknowns:
-                unknown_row = {
-                    'File Name': r['file_name'],
-                    'Section Name': unk.get('section_name', ''),
-                    'Reason': unk.get('reason', ''),
-                    'Confidence': unk.get('confidence', 0),
-                    'Similar To': unk.get('similar_to', '')
-                }
-                unknown_rows.append(unknown_row)
+            rows.append(row)
         
-        unknowns_df = pd.DataFrame(unknown_rows) if unknown_rows else pd.DataFrame()
+        # Create DataFrame with columns in specific order
+        columns_order = ['File Name', 'File Path'] + section_columns
+        df = pd.DataFrame(rows, columns=columns_order)
         
         # Write to Excel
         with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-            summary_df.to_excel(writer, sheet_name='Summary', index=False)
-            sections_df.to_excel(writer, sheet_name='Sections', index=False)
-            if not unknowns_df.empty:
-                unknowns_df.to_excel(writer, sheet_name='Unknown Sections', index=False)
+            df.to_excel(writer, sheet_name='Resumes', index=False)
+            
+            # Auto-adjust column widths
+            worksheet = writer.sheets['Resumes']
+            for idx, col in enumerate(df.columns):
+                max_length = max(
+                    df[col].astype(str).apply(len).max(),
+                    len(col)
+                )
+                # Limit column width to 100 characters for readability
+                adjusted_width = min(max_length + 2, 100)
+                worksheet.column_dimensions[chr(65 + idx)].width = adjusted_width
         
         print(f"\n💾 Saved Excel to: {output_path}")
-        print(f"   📊 Sheets: Summary, Sections" + (", Unknown Sections" if not unknowns_df.empty else ""))
+        print(f"   📊 Format: One resume per row with {len(section_columns)} section columns")
+        print(f"   📄 Total rows: {len(rows)}")
         return True
         
     except ImportError:

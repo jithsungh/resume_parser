@@ -90,23 +90,38 @@ def _load_rows_from_excel(xlsx_path: Path) -> List[Dict[str, Any]]:
         return []
 
     header = [str(h or "").strip() for h in rows[0]]
-    data_rows = rows[1:]    # Identify section columns from header
+    data_rows = rows[1:]
     cols = {name: idx for idx, name in enumerate(header)}
 
-    # Required column
-    if "pdf_path" not in cols:
-        raise ValueError(f"Missing required column 'pdf_path' in Excel header: {header}")    # Any columns after pdf_path and File Name are section columns
-    section_cols_in_sheet = [h for h in header if h not in ["pdf_path", "File Name"]]
-    ordered_sections = section_cols_in_sheet  # Keep order as in Excel
+    # Required columns
+    if "File Name" not in cols:
+        # Fallback to old format with pdf_path
+        if "pdf_path" not in cols:
+            raise ValueError(f"Missing required column 'File Name' or 'pdf_path' in Excel header: {header}")
+        file_path_col = "pdf_path"
+    else:
+        file_path_col = "File Path" if "File Path" in cols else "File Name"
 
+    # Identify section columns - anything that's not File Name or File Path
+    section_cols_in_sheet = [h for h in header if h not in ["File Name", "File Path", "pdf_path", "Error"]]
+    
     items: List[Dict[str, Any]] = []
     for i, r in enumerate(data_rows):
         if r is None:
             continue
         
-        pdf_path = (r[cols["pdf_path"]] or "").strip() if len(r) > cols["pdf_path"] else ""
-        if not pdf_path:
+        # Get file path
+        file_name_idx = cols.get("File Name", cols.get("pdf_path", 0))
+        file_path_idx = cols.get(file_path_col, file_name_idx)
+        
+        file_name = (r[file_name_idx] or "").strip() if len(r) > file_name_idx else ""
+        file_path = (r[file_path_idx] or "").strip() if len(r) > file_path_idx else ""
+        
+        if not file_name and not file_path:
             continue
+        
+        # Use file_path if available, otherwise use file_name
+        pdf_path = file_path if file_path else file_name
         
         # Parse contact info from "Contact Information" section if available
         contact: Dict[str, Any] = {}
@@ -132,7 +147,7 @@ def _load_rows_from_excel(xlsx_path: Path) -> List[Dict[str, Any]]:
                         contact['name'] = line
 
         sections: Dict[str, Any] = {}
-        for sec in ordered_sections:
+        for sec in section_cols_in_sheet:
             idx = cols.get(sec)
             if idx is None or idx >= len(r):
                 continue
@@ -153,6 +168,74 @@ def _load_rows_from_excel(xlsx_path: Path) -> List[Dict[str, Any]]:
             "contact": contact,
             "sections": sections,
         })
+    return items
+
+def _load_rows_from_json(json_path: Path) -> List[Dict[str, Any]]:
+    """Load resume data from JSON format (batch_results_*.json)"""
+    if not json_path.exists():
+        raise FileNotFoundError(f"JSON file not found: {json_path}")
+    
+    with open(json_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    
+    results = data.get("results", [])
+    items: List[Dict[str, Any]] = []
+    
+    for i, entry in enumerate(results):
+        if not entry.get("success"):
+            continue
+        
+        result = entry.get("result", {})
+        file_path = entry.get("file_path", "")
+        
+        if not file_path:
+            continue
+        
+        # Extract contact information (if available)
+        contact: Dict[str, Any] = {}
+        
+        # Parse sections
+        sections_data = result.get("sections", [])
+        sections: Dict[str, Any] = {}
+        
+        for section in sections_data:
+            section_name = section.get("section_name", "Unknown")
+            content = section.get("content", "")
+            
+            # Special handling for contact information in Education or other sections
+            if section_name == "Contact Information" or "contact" in section_name.lower():
+                if isinstance(content, str) and content.strip():
+                    lines = content.split('\n')
+                    for line in lines:
+                        line = line.strip()
+                        if '@' in line:
+                            contact['email'] = line
+                        elif any(c.isdigit() for c in line) and len(line) > 8:
+                            if 'phone' not in contact:
+                                contact['phone'] = line
+                        elif 'linkedin.com' in line.lower():
+                            contact['linkedin'] = line
+                        elif 'github.com' in line.lower():
+                            contact['github'] = line
+            
+            # Convert content to list of lines
+            if isinstance(content, str):
+                lines = [ln.strip() for ln in content.split("\n") if ln.strip()]
+            elif isinstance(content, list):
+                lines = [str(v).strip() for v in content if str(v).strip()]
+            else:
+                lines = [str(content).strip()] if str(content).strip() else []
+            
+            if lines:
+                sections[section_name] = lines
+        
+        items.append({
+            "index": i,
+            "pdf_path": file_path,
+            "contact": contact,
+            "sections": sections,
+        })
+    
     return items
 
 def _resolve_excel_path() -> Path:
@@ -180,6 +263,51 @@ def _resolve_excel_path() -> Path:
         if "batch" in cand.name.lower():
             return cand
     raise FileNotFoundError(f"Could not find {DEFAULT_XLSX} or {ALSO_TRY_XLSX} or {FALLBACK_XLSX} in {ROOT_DIR}")
+
+def _resolve_data_path() -> tuple[Path, str]:
+    """Returns (path, type) where type is 'json' or 'excel'"""
+    # Allow override via env
+    env_val = os.getenv("BATCH_DATA")
+    if env_val:
+        p = Path(env_val)
+        if not p.is_absolute():
+            p = ROOT_DIR / p
+        if p.exists():
+            return (p, "json" if p.suffix == ".json" else "excel")
+
+    # Try JSON files first (newer format)
+    json_candidates = [
+        ROOT_DIR / "outputs" / "batch_results_20251027_163813.json",
+        ROOT_DIR / "batch_results.json",
+        ROOT_DIR / "outputs" / "batch_results.json",
+    ]
+    for p in json_candidates:
+        if p.exists():
+            return (p, "json")
+    
+    # Look for any JSON in outputs with batch_results in name
+    outputs_dir = ROOT_DIR / "outputs"
+    if outputs_dir.exists():
+        for cand in outputs_dir.glob("batch_results*.json"):
+            return (cand, "json")
+
+    # Fall back to Excel
+    excel_candidates = [
+        ROOT_DIR / DEFAULT_XLSX,
+        ROOT_DIR / ALSO_TRY_XLSX,
+        ROOT_DIR / FALLBACK_XLSX,
+        ROOT_DIR / "outputs" / DEFAULT_XLSX,
+    ]
+    for p in excel_candidates:
+        if p.exists():
+            return (p, "excel")
+
+    # Last resort: look in root for any xlsx containing 'batch' in name
+    for cand in ROOT_DIR.glob("*.xlsx"):
+        if "batch" in cand.name.lower():
+            return (cand, "excel")
+    
+    raise FileNotFoundError(f"Could not find batch_results JSON or Excel file in {ROOT_DIR}")
 
 def _build_allowed_pdf_map(items: List[Dict[str, Any]]) -> Dict[int, Path]:
     """
@@ -223,9 +351,16 @@ def _build_allowed_pdf_map(items: List[Dict[str, Any]]) -> Dict[int, Path]:
 def create_app() -> Flask:
     app = Flask(__name__)
 
-    # Load data once at startup
-    xlsx = _resolve_excel_path()
-    items = _load_rows_from_excel(xlsx)
+    # Load data once at startup - support both JSON and Excel formats
+    data_path, data_type = _resolve_data_path()
+    
+    if data_type == "json":
+        items = _load_rows_from_json(data_path)
+        print(f"[info] Loaded {len(items)} items from JSON: {data_path}", flush=True)
+    else:
+        items = _load_rows_from_excel(data_path)
+        print(f"[info] Loaded {len(items)} items from Excel: {data_path}", flush=True)
+    
     path_map = _build_allowed_pdf_map(items)
 
     @app.get("/")
@@ -283,8 +418,7 @@ def create_app() -> Flask:
             payload.append({
                 "i": i,
                 "pdf_path": item["pdf_path"],
-                "filename": Path(item["pdf_path"]).name,
-                "contact": item.get("contact", {}),
+                "filename": Path(item["pdf_path"]).name,                "contact": item.get("contact", {}),
                 "sections": item.get("sections", {}),
             })
         return jsonify(payload)
@@ -302,6 +436,9 @@ def create_app() -> Flask:
             mimetype = "application/pdf"
         elif ext in (".png", ".jpg", ".jpeg"):
             mimetype = f"image/{'jpeg' if ext in ('.jpg', '.jpeg') else 'png'}"
+        elif ext in (".doc", ".docx"):
+            # For Word docs, send as download with proper mimetype
+            mimetype = "application/vnd.openxmlformats-officedocument.wordprocessingml.document" if ext == ".docx" else "application/msword"
         else:
             # default binary; iframe may not render but still allows download
             mimetype = "application/octet-stream"
