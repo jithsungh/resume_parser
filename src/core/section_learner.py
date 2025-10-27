@@ -21,12 +21,13 @@ class SectionLearner:
     - False positive prevention
     - Confidence scoring
     """
-    def __init__(self, config_path: Optional[str] = None):
+    def __init__(self, config_path: Optional[str] = None, auto_save: bool = False):
         """
         Initialize learner with config database.
         
         Args:
             config_path: Path to sections_database.json (optional, defaults to config/sections_database.json)
+            auto_save: Whether to automatically save learned sections
         """
         if config_path is None:
             config_path = "config/sections_database.json"
@@ -35,7 +36,13 @@ class SectionLearner:
         self.config = self._load_config()
         self.embeddings_cache = {}
         self._embedding_model = None
-    
+        self.auto_save = auto_save
+        
+        # Learning session tracking
+        self.observed_sections = {}  # section_name -> frequency
+        self.new_variants = []  # (section_name, variant) pairs
+        self.potential_new_sections = []  # (heading, frequency) pairs
+
     def _load_config(self) -> Dict[str, Any]:
         """Load section database"""
         try:
@@ -361,6 +368,138 @@ class SectionLearner:
             return (True, section_name, confidence)
         else:
             return (False, None, confidence)
+    
+    def observe_section(self, section_name: str):
+        """
+        Observe a section heading during processing.
+        
+        Args:
+            section_name: The section name/heading observed
+        """
+        # Track frequency
+        if section_name not in self.observed_sections:
+            self.observed_sections[section_name] = 0
+        self.observed_sections[section_name] += 1
+        
+        # Try to match to known section
+        match, confidence = self.find_matching_section(section_name, confidence_threshold=0.75)
+        
+        if match:
+            # Check if this is a new variant
+            variants = self.config.get('sections', {}).get(match, {}).get('variants', [])
+            if section_name.lower() not in [v.lower() for v in variants]:
+                self.new_variants.append((match, section_name))
+        else:
+            # Potential new section
+            self.potential_new_sections.append((section_name, 1))
+    
+    def print_learning_report(self):
+        """Print a report of observed sections and learning opportunities"""
+        print("\n📊 Section Learning Report")
+        print("=" * 60)
+        
+        # Most common sections
+        if self.observed_sections:
+            print("\n✅ Observed Sections:")
+            sorted_sections = sorted(self.observed_sections.items(), key=lambda x: x[1], reverse=True)
+            for section_name, count in sorted_sections[:10]:
+                match, confidence = self.find_matching_section(section_name)
+                status = f"✓ {match}" if match else "? Unknown"
+                print(f"   {section_name:<30} ({count:2d}x) - {status}")
+        
+        # New variants discovered
+        if self.new_variants:
+            print(f"\n💡 New Variants Discovered ({len(self.new_variants)}):")
+            # Group by canonical section
+            variant_groups = {}
+            for canonical, variant in self.new_variants:
+                if canonical not in variant_groups:
+                    variant_groups[canonical] = []
+                if variant not in variant_groups[canonical]:
+                    variant_groups[canonical].append(variant)
+            
+            for canonical, variants in variant_groups.items():
+                print(f"   {canonical}:")
+                for variant in variants:
+                    print(f"     + {variant}")
+        
+        # Potential new sections
+        if self.potential_new_sections:
+            print(f"\n⚠️  Potential New Sections ({len(self.potential_new_sections)}):")
+            for heading, freq in self.potential_new_sections[:5]:
+                print(f"   - {heading} ({freq}x)")
+        
+        print("=" * 60)
+    
+    def get_learning_suggestions(self) -> Dict[str, Any]:
+        """
+        Get actionable learning suggestions.
+        
+        Returns:
+            Dictionary with suggested actions
+        """
+        suggestions = {
+            'add_variants': [],  # (canonical_name, new_variant)
+            'add_new_sections': [],  # (new_section_name, initial_variants)
+            'review_unknown': []  # (heading, frequency, similar_to)
+        }
+        
+        # Suggest adding new variants
+        variant_groups = {}
+        for canonical, variant in self.new_variants:
+            if canonical not in variant_groups:
+                variant_groups[canonical] = []
+            if variant not in variant_groups[canonical]:
+                variant_groups[canonical].append(variant)
+        
+        for canonical, variants in variant_groups.items():
+            for variant in variants:
+                suggestions['add_variants'].append((canonical, variant))
+        
+        # Suggest new sections (if frequency >= 3)
+        section_freq = {}
+        for heading, freq in self.potential_new_sections:
+            if heading not in section_freq:
+                section_freq[heading] = 0
+            section_freq[heading] += freq
+        
+        for heading, freq in section_freq.items():
+            if freq >= 3:
+                suggestions['add_new_sections'].append((heading.title(), [heading.lower()]))
+            else:
+                # Find similar section
+                match, confidence = self.find_matching_section(heading, confidence_threshold=0.60)
+                similar_to = match if match and confidence > 0.60 else None
+                suggestions['review_unknown'].append((heading, freq, similar_to))
+        
+        return suggestions
+    
+    def apply_suggestions(self, suggestions: Dict[str, Any]):
+        """
+        Apply learning suggestions to the database.
+        
+        Args:
+            suggestions: Dictionary from get_learning_suggestions()
+        """
+        applied_count = 0
+        
+        # Add variants
+        for canonical, variant in suggestions.get('add_variants', []):
+            if self._add_section_variant(canonical, variant):
+                applied_count += 1
+                print(f"✓ Added variant '{variant}' to '{canonical}'")
+        
+        # Add new sections
+        for section_name, initial_variants in suggestions.get('add_new_sections', []):
+            self.add_new_section(section_name, initial_variants)
+            applied_count += 1
+        
+        print(f"\n✅ Applied {applied_count} learning suggestions")
+        
+        if self.auto_save:
+            self._save_config()
+            print("💾 Changes saved automatically")
+    
     def learn_from_result(self, parsed_data: Dict[str, Any]) -> List[str]:
         """
         Learn new section variants from a parsed resume.
@@ -411,6 +550,7 @@ class SectionLearner:
                         learned.append(f"{section_heading} -> {match}")
         
         return learned
+    
     def _looks_like_section_header(self, text: str) -> bool:
         """
         Check if text looks like a section header.
