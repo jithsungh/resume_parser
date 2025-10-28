@@ -189,16 +189,15 @@ class ResumeLabelingApp:
         if not unlabeled:
             st.success("🎉 All PDFs have been labeled!")
             st.balloons()
-            
-            # Show dataset summary
+              # Show dataset summary
             if self.dataset_path.exists():
                 df = pd.read_csv(self.dataset_path)
                 st.header("Dataset Summary")
-                st.dataframe(df)
+                st.dataframe(df, width='stretch')
                 
                 st.subheader("Label Distribution")
                 label_counts = df['label'].value_counts().sort_index()
-                st.bar_chart(label_counts)
+                st.bar_chart(label_counts, width='stretch')
             return
         
         # Get current PDF
