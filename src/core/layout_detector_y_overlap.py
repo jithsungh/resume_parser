@@ -29,7 +29,11 @@ class EnhancedLayoutDetector(BaseLayoutDetector):
     
     def detect_layout(self, words: List[WordMetadata], page_width: float = None) -> LayoutType:
         """
-        Enhanced layout detection with Y-overlap analysis
+        Enhanced layout detection with proper Type 1/2/3 classification
+        
+        Type 1: Single column (horizontal flow)
+        Type 2: Clean vertical columns with clear gaps (valleys reach ~0)
+        Type 3: Complex - vertical columns PLUS horizontal sections (valleys don't reach 0)
         
         Args:
             words: List of WordMetadata for the page
@@ -58,10 +62,11 @@ class EnhancedLayoutDetector(BaseLayoutDetector):
         
         if self.verbose:
             print(f"[EnhancedLayoutDetector] Analyzing {len(words)} words, page width: {page_width:.1f}")
-          # FIRST: Try Y-overlap analysis for Type 3 detection
+        
+        # Step 1: Try Y-overlap analysis for column detection
         column_boundaries, detection_method = self._detect_columns_by_y_overlap(words, page_width)
         
-        # FALLBACK: Try gap-based detection if Y-overlap didn't find columns
+        # Step 2: FALLBACK - Try gap-based detection
         if len(column_boundaries) == 1:
             gap_boundaries = self._detect_columns_by_gaps(words, page_width)
             if len(gap_boundaries) > 1:
@@ -73,33 +78,18 @@ class EnhancedLayoutDetector(BaseLayoutDetector):
             if self.verbose:
                 print(f"  Using Y-overlap detection: {len(column_boundaries)} columns")
         
-        # Compute histogram for metadata
+        # Step 3: Compute histogram for ALL words
         histogram = self._compute_histogram(words, page_width)
         smoothed_histogram = self._smooth_histogram(histogram)
         peaks = self._find_peaks_adaptive(smoothed_histogram, len(column_boundaries))
         valleys = self._find_valleys_adaptive(smoothed_histogram, column_boundaries)
         
-        # Determine layout type based on detection method
+        # Step 4: Classify as Type 1, 2, or 3 based on histogram analysis
         num_columns = len(column_boundaries)
-        if num_columns == 1:
-            layout_type = 1
-            type_name = "single-column"
-            confidence = 0.9
-        elif num_columns == 2:
-            # Type 3 if detected via Y-overlap (side-by-side with no gaps)
-            # Type 2 if detected via gaps (clean column separation)
-            if detection_method == 'y_overlap':
-                layout_type = 3
-                type_name = "hybrid/complex"
-                confidence = 0.80
-            else:
-                layout_type = 2
-                type_name = "multi-column"
-                confidence = 0.85
-        else:
-            layout_type = 3
-            type_name = "hybrid/complex"
-            confidence = 0.7
+        layout_type, type_name, confidence = self._classify_layout_type(
+            words, column_boundaries, histogram, smoothed_histogram, 
+            peaks, valleys, page_width, detection_method
+        )
         
         result = LayoutType(
             type=layout_type,
@@ -110,7 +100,8 @@ class EnhancedLayoutDetector(BaseLayoutDetector):
             peaks=peaks,
             valleys=valleys,
             confidence=confidence,
-            page_width=page_width,            metadata={
+            page_width=page_width,
+            metadata={
                 'total_words': len(words),
                 'peak_count': len(peaks),
                 'valley_count': len(valleys),
@@ -125,6 +116,72 @@ class EnhancedLayoutDetector(BaseLayoutDetector):
             print(f"  Confidence: {result.confidence:.1%}")
         
         return result
+    
+    def _classify_layout_type(
+        self,
+        words: List[WordMetadata],
+        column_boundaries: List[Tuple[float, float]],
+        histogram: Dict[int, int],
+        smoothed_histogram: Dict[int, float],
+        peaks: List[int],
+        valleys: List[int],
+        page_width: float,
+        detection_method: str
+    ) -> Tuple[int, str, float]:
+        """
+        Classify layout as Type 1, 2, or 3 using histogram valley analysis
+        
+        Type 1: Single column
+        Type 2: Clean vertical columns (valleys reach near 0)
+        Type 3: Complex (vertical columns + horizontal sections, valleys don't reach 0)
+        
+        Returns:
+            Tuple of (layout_type, type_name, confidence)
+        """
+        num_columns = len(column_boundaries)
+        
+        # Type 1: Single column
+        if num_columns == 1:
+            return 1, "single-column", 0.9
+        
+        # For multi-column layouts, check valley depth to distinguish Type 2 vs Type 3
+        if smoothed_histogram and len(peaks) >= 2:
+            max_val = max(smoothed_histogram.values())
+            
+            # Find deepest valley between peaks
+            valley_values = []
+            for i in range(len(peaks) - 1):
+                peak1 = peaks[i]
+                peak2 = peaks[i + 1]
+                
+                # Find minimum between peaks
+                min_val = float('inf')
+                for bin_idx in range(peak1, peak2 + 1):
+                    val = smoothed_histogram.get(bin_idx, 0)
+                    if val < min_val:
+                        min_val = val
+                
+                valley_values.append(min_val)
+            
+            if valley_values:
+                deepest_valley = min(valley_values)
+                valley_depth_ratio = deepest_valley / max_val
+                
+                if self.verbose:
+                    print(f"    Valley analysis: deepest={deepest_valley:.1f}, max={max_val:.1f}, ratio={valley_depth_ratio:.2%}")
+                
+                # Type 2: Clean columns (valley reaches near 0, ratio < 0.15)
+                # Type 3: Complex layout (valley doesn't reach 0, ratio >= 0.15)
+                if valley_depth_ratio < 0.15:  # Valley is less than 15% of max
+                    return 2, "multi-column", 0.85
+                else:
+                    return 3, "hybrid/complex", 0.80
+        
+        # Default: If we have 2+ columns but unclear histogram, use detection method
+        if detection_method == 'y_overlap':
+            return 3, "hybrid/complex", 0.75
+        else:
+            return 2, "multi-column", 0.80
     
     def _detect_columns_by_y_overlap(self, words: List[WordMetadata], page_width: float) -> Tuple[List[Tuple[float, float]], str]:
         """
@@ -177,8 +234,7 @@ class EnhancedLayoutDetector(BaseLayoutDetector):
                 full_width_lines.append((y_pos, x_start, x_end, line_words))
         
         if self.verbose:
-            print(f"    Line classification: {len(left_lines)} left, {len(right_lines)} right, {len(full_width_lines)} full-width")
-          # Check for Type 3 pattern: left and right columns with overlapping Y-ranges
+            print(f"    Line classification: {len(left_lines)} left, {len(right_lines)} right, {len(full_width_lines)} full-width")          # Check for Type 3 pattern: left and right columns with overlapping Y-ranges
         if len(left_lines) >= 3 and len(right_lines) >= 3:
             left_y_min = min(y for y, _, _, _ in left_lines)
             left_y_max = max(y for y, _, _, _ in left_lines)
@@ -200,32 +256,29 @@ class EnhancedLayoutDetector(BaseLayoutDetector):
                 total_count = left_count + right_count
                 balance_ratio = min(left_count, right_count) / max(left_count, right_count)
                 
-                # Type 3 criteria:
-                # 1. At least 25% overlap (relaxed from 30%)
-                # 2. Both columns have reasonable content (balance_ratio > 0.15 = at least 15% on smaller side)
+                # Type 3 criteria (RELAXED for better detection):
+                # 1. At least 20% overlap (further relaxed from 25%)
+                # 2. At least 3 lines in each column (already checked above)
                 # 3. Column boundary near middle of page
-                is_balanced = balance_ratio > 0.15  # Smaller column has at least 15% of larger
-                has_overlap = overlap_pct > 25  # Relaxed threshold
+                # NOTE: Balance ratio check removed - even 5L/43R can be valid Type 3
+                has_overlap = overlap_pct > 20  # More relaxed threshold
                 
-                if has_overlap and is_balanced:
+                if has_overlap:
                     # Find column boundary
                     left_x_max = max(x_end for _, _, x_end, _ in left_lines)
                     right_x_min = min(x_start for _, x_start, _, _ in right_lines)
                     col_boundary = (left_x_max + right_x_min) / 2
                     
-                    # Validate: boundary should be near middle of page (20%-80% range)
-                    if 0.2 * page_width < col_boundary < 0.8 * page_width:
+                    # Validate: boundary should be somewhere reasonable (10%-90% range)
+                    if 0.1 * page_width < col_boundary < 0.9 * page_width:
                         if self.verbose:
                             print(f"    ✓ Type 3 detected: Y-overlap={overlap_pct:.1f}%, balance={balance_ratio:.2f}, boundary at x={col_boundary:.1f}")
                         
                         return [(0, col_boundary), (col_boundary, page_width)], 'y_overlap'
                     elif self.verbose:
-                        print(f"    ✗ Boundary too far from center: x={col_boundary:.1f} ({col_boundary/page_width*100:.1f}%)")
+                        print(f"    ✗ Boundary too far from reasonable range: x={col_boundary:.1f} ({col_boundary/page_width*100:.1f}%)")
                 elif self.verbose:
-                    if not has_overlap:
-                        print(f"    ✗ Insufficient overlap: {overlap_pct:.1f}% < 25%")
-                    if not is_balanced:
-                        print(f"    ✗ Unbalanced columns: {left_count}L / {right_count}R (ratio={balance_ratio:.2f})")
+                    print(f"    ✗ Insufficient overlap: {overlap_pct:.1f}% < 20%")
         
         # No Type 3 pattern found
         return [(0, page_width)], 'single_column'
