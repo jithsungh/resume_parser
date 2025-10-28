@@ -218,12 +218,11 @@ class ResumeLabelingApp:
         
         with col_pdf:
             st.subheader("PDF Preview")
-            
             try:
                 # Render PDF
                 with st.spinner("Rendering PDF..."):
                     img = self._render_pdf_page(current_pdf, zoom=zoom_level)
-                    st.image(img, use_container_width=True)
+                    st.image(img, width='stretch')
             
             except Exception as e:
                 st.error(f"Error rendering PDF: {e}")
@@ -286,27 +285,26 @@ class ResumeLabelingApp:
                 - Full-width headers/sections
                 - Complex structure with varying layouts
                 """)
-            
-            # Label buttons
+              # Label buttons
             st.markdown("---")
             col1, col2, col3 = st.columns(3)
             
             with col1:
-                if st.button("📋 Type 1", use_container_width=True, type="primary"):
+                if st.button("📋 Type 1", width='stretch', type="primary"):
                     self._save_label(current_pdf, features, 1)
                     st.success("✅ Labeled as Type 1")
                     self._move_to_next_unlabeled()
                     st.rerun()
             
             with col2:
-                if st.button("📰 Type 2", use_container_width=True, type="primary"):
+                if st.button("📰 Type 2", width='stretch', type="primary"):
                     self._save_label(current_pdf, features, 2)
                     st.success("✅ Labeled as Type 2")
                     self._move_to_next_unlabeled()
                     st.rerun()
             
             with col3:
-                if st.button("🔀 Type 3", use_container_width=True, type="primary"):
+                if st.button("🔀 Type 3", width='stretch', type="primary"):
                     self._save_label(current_pdf, features, 3)
                     st.success("✅ Labeled as Type 3")
                     self._move_to_next_unlabeled()
@@ -317,14 +315,14 @@ class ResumeLabelingApp:
             nav_col1, nav_col2 = st.columns(2)
             
             with nav_col1:
-                if st.button("⬅️ Previous", use_container_width=True):
+                if st.button("⬅️ Previous", width='stretch'):
                     if st.session_state.current_index > 0:
                         st.session_state.current_index -= 1
                         st.session_state.current_features = None
                         st.rerun()
             
             with nav_col2:
-                if st.button("➡️ Next", use_container_width=True):
+                if st.button("➡️ Next", width='stretch'):
                     if st.session_state.current_index < total_pdfs - 1:
                         st.session_state.current_index += 1
                         st.session_state.current_features = None

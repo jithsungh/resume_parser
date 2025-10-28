@@ -78,7 +78,7 @@ class ResumeFeatureExtractor:
             if block.get("type") != 0:  # Skip non-text blocks
                 continue
                 
-            for line in block.get("lines", []):
+            for line in block.get("lines", []):                
                 for span in line.get("spans", []):
                     text = span.get("text", "").strip()
                     if not text:
@@ -87,8 +87,8 @@ class ResumeFeatureExtractor:
                     bbox = span.get("bbox", [0, 0, 0, 0])
                     words.append(WordMetadata(
                         text=text,
-                        bbox=bbox,
-                        page_num=0,
+                        bbox=tuple(bbox),
+                        page=0,
                         font_size=span.get("size", 12.0),
                         font_name=span.get("font", "unknown")
                     ))
