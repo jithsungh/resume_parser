@@ -129,11 +129,15 @@ class EnhancedLayoutDetector(BaseLayoutDetector):
         detection_method: str
     ) -> Tuple[int, str, float]:
         """
-        Classify layout as Type 1, 2, or 3 using histogram valley analysis
+        Classify layout as Type 1, 2, or 3 using multiple signals
         
-        Type 1: Single column
-        Type 2: Clean vertical columns (valleys reach near 0)
-        Type 3: Complex (vertical columns + horizontal sections, valleys don't reach 0)
+        Type 1: Single column (horizontal flow)
+        Type 2: Clean vertical columns - balanced, newspaper-style
+        Type 3: Complex/hybrid - unbalanced columns (sidebar + main), mixed with horizontal sections
+        
+        Key differences between Type 2 and Type 3:
+        - Type 2: Balanced columns (similar widths/content), clean gaps
+        - Type 3: Unbalanced (sidebar + main content), often with horizontal headers
         
         Returns:
             Tuple of (layout_type, type_name, confidence)
@@ -144,7 +148,28 @@ class EnhancedLayoutDetector(BaseLayoutDetector):
         if num_columns == 1:
             return 1, "single-column", 0.9
         
-        # For multi-column layouts, check valley depth to distinguish Type 2 vs Type 3
+        # For multi-column layouts, use multiple signals to distinguish Type 2 vs Type 3
+        
+        # Signal 1: Column balance (width ratio)
+        col_widths = [end - start for start, end in column_boundaries]
+        width_ratio = min(col_widths) / max(col_widths) if max(col_widths) > 0 else 0
+        is_balanced = width_ratio > 0.6  # Balanced if columns within 60% of each other
+        
+        # Signal 2: Check for horizontal sections by analyzing line distribution
+        lines = self._group_words_into_lines(words)
+        full_width_lines = 0
+        for y_pos, line_words in lines:
+            line_words.sort(key=lambda w: w.bbox[0])
+            x_start = line_words[0].bbox[0]
+            x_end = line_words[-1].bbox[2]
+            width = x_end - x_start
+            if width > page_width * 0.75:  # Spans >75% of page
+                full_width_lines += 1
+        
+        has_horizontal_sections = full_width_lines >= 3  # At least 3 full-width lines
+        
+        # Signal 3: Valley depth analysis
+        valley_depth_ratio = 1.0  # Default: no clear valley
         if smoothed_histogram and len(peaks) >= 2:
             max_val = max(smoothed_histogram.values())
             
@@ -165,23 +190,33 @@ class EnhancedLayoutDetector(BaseLayoutDetector):
             
             if valley_values:
                 deepest_valley = min(valley_values)
-                valley_depth_ratio = deepest_valley / max_val
-                
-                if self.verbose:
-                    print(f"    Valley analysis: deepest={deepest_valley:.1f}, max={max_val:.1f}, ratio={valley_depth_ratio:.2%}")
-                
-                # Type 2: Clean columns (valley reaches near 0, ratio < 0.15)
-                # Type 3: Complex layout (valley doesn't reach 0, ratio >= 0.15)
-                if valley_depth_ratio < 0.15:  # Valley is less than 15% of max
-                    return 2, "multi-column", 0.85
-                else:
-                    return 3, "hybrid/complex", 0.80
+                valley_depth_ratio = deepest_valley / max_val if max_val > 0 else 1.0
         
-        # Default: If we have 2+ columns but unclear histogram, use detection method
-        if detection_method == 'y_overlap':
-            return 3, "hybrid/complex", 0.75
+        if self.verbose:
+            print(f"    Type 2/3 signals:")
+            print(f"      - Width ratio: {width_ratio:.2f} (balanced={is_balanced})")
+            print(f"      - Full-width lines: {full_width_lines} (has_horizontal={has_horizontal_sections})")
+            print(f"      - Valley ratio: {valley_depth_ratio:.2%}")
+            print(f"      - Detection method: {detection_method}")
+        
+        # Decision logic:
+        # Type 3 if ANY of:
+        #   1. Detected via Y-overlap method (indicates side-by-side at same Y-level)
+        #   2. Unbalanced columns (sidebar + main content pattern)
+        #   3. Has horizontal sections mixed with columns
+        #   4. Valley doesn't reach near 0 (ratio >= 0.20)
+        
+        is_type3 = (
+            detection_method == 'y_overlap' or
+            not is_balanced or
+            has_horizontal_sections or
+            valley_depth_ratio >= 0.20
+        )
+        
+        if is_type3:
+            return 3, "hybrid/complex", 0.80
         else:
-            return 2, "multi-column", 0.80
+            return 2, "multi-column", 0.85
     
     def _detect_columns_by_y_overlap(self, words: List[WordMetadata], page_width: float) -> Tuple[List[Tuple[float, float]], str]:
         """
