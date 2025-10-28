@@ -192,11 +192,37 @@ class EnhancedLayoutDetector(BaseLayoutDetector):
         col_widths = [end - start for start, end in column_boundaries]
         width_ratio = min(col_widths) / max(col_widths) if max(col_widths) > 0 else 0
         is_balanced = width_ratio > 0.6
-        
-        # ============================================================
+          # ============================================================
         # DECISION LOGIC (Weighted Multi-Signal Classification)
         # ============================================================
-          # Score each signal (0-1 scale, higher = more Type 3)
+        
+        # CRITICAL: If Y-overlap detection found columns, it means Type 3 pattern exists
+        # We should give strong weight to this signal
+        if detection_method == 'y_overlap':
+            # Y-overlap already confirmed side-by-side columns with overlapping Y-ranges
+            # This is the STRONGEST signal for Type 3
+            is_type3 = True
+            confidence = 0.85 + (0.10 if has_horizontal_sections else 0.0)
+            
+            if self.verbose:
+                print(f"    ════════════════════════════════════════")
+                print(f"    Type 2/3 Classification Signals:")
+                print(f"    ════════════════════════════════════════")
+                print(f"    DETECTION METHOD: {detection_method}")
+                print(f"      → Y-overlap detection CONFIRMS Type 3")
+                print(f"    SUPPORTING SIGNALS:")
+                print(f"      • Valley depth ratio: {valley_depth_ratio:.3f}")
+                print(f"      • Y-overlap ratio: {mean_y_overlap:.3f}")
+                print(f"      • Horizontal sections: {full_width_lines} lines")
+                print(f"      • Column balance: {width_ratio:.2f}")
+                print(f"    ────────────────────────────────────────")
+                print(f"    FINAL: Detection method = y_overlap → Type 3 (FORCED)")
+                print(f"    ════════════════════════════════════════")
+            
+            return 3, "hybrid/complex", confidence
+        
+        # Otherwise, use multi-signal weighted classification
+        # Score each signal (0-1 scale, higher = more Type 3)
         signals = {
             'valley_depth': valley_depth_score,  # Primary (weight: 0.4)
             'y_overlap': min(mean_y_overlap * 4, 1.0),  # Secondary (weight: 0.35) - more sensitive
@@ -211,7 +237,7 @@ class EnhancedLayoutDetector(BaseLayoutDetector):
         )
         
         # Classification threshold (lowered for better Type 3 detection)
-        is_type3 = type3_score > 0.45  # More than 45% confidence for Type 3
+        is_type3 = type3_score > 0.35  # Lowered from 0.45 for better sensitivity
         
         # Confidence calculation
         confidence = 0.70 + min(abs(type3_score - 0.5) * 0.4, 0.25)
