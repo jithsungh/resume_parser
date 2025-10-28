@@ -115,19 +115,26 @@ class EnhancedLayoutDetector(BaseLayoutDetector):
         header_frac = gm["header_frac"]     # top portion before gutter becomes stable
 
         if self.verbose:
-            print(f"    Gutter coverage={coverage:.2f}, header_frac={header_frac:.2f}")
-
-        # Step 5: DECISION (simple, deterministic)
+            print(f"    Gutter coverage={coverage:.2f}, header_frac={header_frac:.2f}")        # Step 5: DECISION - Check for horizontal sections (PRIMARY signal for Type 3)
         num_columns = len(column_boundaries)
         
-        if num_columns >= 2 and coverage >= 0.70:
-            # Strong gutter detected - use it to decide Type 2 vs 3
-            if header_frac <= 0.05:
-                # No significant header - pure Type 2
+        # Count horizontal sections (full-width lines that cross both columns)
+        full_width_lines, has_horizontal_sections = self._detect_horizontal_sections(words, page_width)
+        
+        if self.verbose:
+            print(f"    Horizontal sections: {full_width_lines} full-width lines, has_sections={has_horizontal_sections}")
+        
+        if num_columns >= 2:
+            # We have columns detected - now distinguish Type 2 vs Type 3
+            # Type 3 = columns + horizontal sections crossing them
+            # Type 2 = pure columns, no horizontal sections
+            
+            if has_horizontal_sections:
+                # Has full-width lines crossing columns → Type 3
+                layout_type, type_name, confidence = 3, "hybrid/complex", 0.90
+            elif coverage >= 0.70 and header_frac <= 0.10:
+                # Strong gutter, minimal header → Type 2
                 layout_type, type_name, confidence = 2, "multi-column", 0.92
-            elif 0.10 <= header_frac <= 0.40:
-                # Header present before gutter - Type 3
-                layout_type, type_name, confidence = 3, "hybrid/complex", 0.92
             else:
                 # Ambiguous: fall back to secondary signals
                 layout_type, type_name, confidence = self._classify_layout_type(
@@ -135,11 +142,8 @@ class EnhancedLayoutDetector(BaseLayoutDetector):
                     page_width, detection_method
                 )
         else:
-            # Not enough gutter coverage; use existing logic
-            layout_type, type_name, confidence = self._classify_layout_type(
-                words, column_boundaries, histogram, smoothed_histogram, peaks, valleys,
-                page_width, detection_method
-            )
+            # Single column
+            layout_type, type_name, confidence = 1, "single-column", 0.90
         
         result = LayoutType(
             type=layout_type,
