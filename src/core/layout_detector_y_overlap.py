@@ -471,26 +471,37 @@ class EnhancedLayoutDetector(BaseLayoutDetector):
                 column_lines = left_count + right_count
                 total_lines = column_lines + len(full_width_lines)
                 balance_ratio = min(left_count, right_count) / max(left_count, right_count)
-                
-                # CRITICAL: Calculate column-to-fullwidth ratio
+                  # CRITICAL: Calculate column-to-fullwidth ratio
                 # Type 3: Most lines are in columns (column_lines > full_width_lines)
                 # Type 2 with sidebar: Most lines are full-width (full_width_lines > column_lines)
                 column_ratio = column_lines / total_lines if total_lines > 0 else 0
                 
-                # Type 3 criteria (STRICT for better precision):
+                # Type 3 criteria (ADAPTIVE thresholds based on overlap strength):
                 # 1. At least 20% Y-overlap
                 # 2. At least 3 lines in each column (already checked)
-                # 3. Column lines should dominate (>50% of total lines)
+                # 3. Column lines should be significant:
+                #    - If strong overlap (>60%): column_ratio > 35% (relaxed)
+                #    - If moderate overlap (20-60%): column_ratio > 45%
+                #    - Otherwise: column_ratio > 50%
                 # 4. Column boundary near middle of page
                 has_overlap = overlap_pct > 20
-                has_dominant_columns = column_ratio > 0.50  # NEW: At least 50% of lines are in columns                
+                
+                # Adaptive column ratio threshold based on overlap strength
+                if overlap_pct > 60:
+                    column_ratio_threshold = 0.35  # Relaxed for strong overlap
+                elif overlap_pct > 40:
+                    column_ratio_threshold = 0.40  # Moderate threshold
+                else:
+                    column_ratio_threshold = 0.45  # Stricter for weak overlap
+                
+                has_dominant_columns = column_ratio > column_ratio_threshold
+                
                 if has_overlap and has_dominant_columns:
                     # Find column boundary
                     left_x_max = max(x_end for _, _, x_end, _ in left_lines)
                     right_x_min = min(x_start for _, x_start, _, _ in right_lines)
                     col_boundary = (left_x_max + right_x_min) / 2
-                    
-                    # Validate: boundary should be somewhere reasonable (10%-90% range)
+                      # Validate: boundary should be somewhere reasonable (10%-90% range)
                     if 0.1 * page_width < col_boundary < 0.9 * page_width:
                         if self.verbose:
                             print(f"    ✓ Type 3 detected: Y-overlap={overlap_pct:.1f}%, column_ratio={column_ratio:.2f}, balance={balance_ratio:.2f}, boundary at x={col_boundary:.1f}")
@@ -502,7 +513,8 @@ class EnhancedLayoutDetector(BaseLayoutDetector):
                     if not has_overlap:
                         print(f"    ✗ Insufficient overlap: {overlap_pct:.1f}% < 20%")
                     if not has_dominant_columns:
-                        print(f"    ✗ Column lines not dominant: {column_ratio:.1%} (need >50%)")
+                        print(f"    ✗ Column lines not dominant: {column_ratio:.1%} (need >{column_ratio_threshold:.0%})")
+                        print(f"      → Overlap: {overlap_pct:.1f}%, threshold adjusted to {column_ratio_threshold:.0%}")
                         print(f"      → This looks like Type 2 with sidebar (full-width dominant)")
         
         # No Type 3 pattern found
