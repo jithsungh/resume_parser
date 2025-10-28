@@ -1,21 +1,4 @@
-"""
-Enhanced Layout Detection with Histogram Valley Analysis
-=========================================================
-Detects Type 2 vs Type 3 layouts using quantitative histogram analysis.
-
-Key Innovation: X-Density Histogram Valley Depth Analysis
-- Type 2: Deep valley (≈0) between column peaks → clean separation
-- Type 3: Shallow valley (>20% of peak) → content crosses columns
-
-Additional Signals:
-1. Y-overlap consistency check
-2. Horizontal section detection
-3. Column balance analysis
-
-Reference: Histogram-based layout classification algorithm
-"""
-
-from typing import List, Dict, Any, Tuple, Optional
+from typing import List, Tuple, Dict, Any, Optional
 from dataclasses import dataclass
 from collections import defaultdict
 import numpy as np
@@ -24,42 +7,44 @@ from .word_extractor import WordMetadata
 from .layout_detector_histogram import LayoutDetector as BaseLayoutDetector, LayoutType
 
 
+@dataclass
+class LayoutConfig:
+    """Configuration for enhanced layout detection"""
+    valley_threshold: float = 0.3
+    y_tolerance: int = 5
+    horizontal_lines_min: int = 3
+    full_width_fraction: float = 0.75
+    gutter_zero_max: float = 0.05
+    band_count: int = 60
+    verbose: bool = False
+
+
 class EnhancedLayoutDetector(BaseLayoutDetector):
     """
-    Enhanced layout detector with histogram valley depth analysis
+    Enhanced layout detector: Type 1 / Type 2 / Type 3 classification
+    using histogram valley depth, gutter coverage, Y-overlap, and horizontal sections.
     
-    Combines multiple signals for robust Type 2/3 classification:
-    1. X-density histogram valley depth (primary signal)
-    2. Y-overlap ratio (secondary validation)
-    3. Horizontal section detection
-    4. Column balance analysis
+    This detector combines multiple signals:
+    - Bandwise gutter metrics (primary signal for column detection)
+    - Y-overlap analysis (vertical alignment of text blocks)
+    - Histogram valley depth (density distribution)
+    - Horizontal section detection (full-width text lines)
     """
-      
-    def __init__(self, *args, valley_threshold: float = 0.3, **kwargs):
-        """
-        Args:
-            valley_threshold: Valley depth threshold for Type 2 (default 0.3)
-                            Valley depth < threshold → Type 2 (clean columns)
-                            Valley depth ≥ threshold → Type 3 (hybrid)
-        """
+
+    def __init__(self, config: Optional[LayoutConfig] = None, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.y_tolerance = 5  # Points tolerance for same line
-        self.valley_threshold = valley_threshold  # 0.3 means valley must drop to <30% of peak (more sensitive)
-      
+        self.config = config or LayoutConfig()
+
     def detect_layout(self, words: List[WordMetadata], page_width: float = None) -> LayoutType:
         """
-        Enhanced layout detection with proper Type 1/2/3 classification
-        
-        Type 1: Single column (horizontal flow)
-        Type 2: Clean vertical columns with clear gaps (valleys reach ~0)
-        Type 3: Complex - vertical columns PLUS horizontal sections (valleys don't reach 0)
+        Main entry point for detecting layout type.
         
         Args:
-            words: List of WordMetadata for the page
-            page_width: Width of page (auto-detected if None)
+            words: List of WordMetadata objects
+            page_width: Optional page width (auto-detected if not provided)
             
         Returns:
-            LayoutType with detection results
+            LayoutType object with detected layout information
         """
         if not words:
             return LayoutType(
@@ -74,78 +59,71 @@ class EnhancedLayoutDetector(BaseLayoutDetector):
                 page_width=612,
                 metadata={'error': 'No words provided'}
             )
-        
-        # Determine page width and height
-        if page_width is None:
-            page_width = max(word.bbox[2] for word in words) + 10
-        page_height = max(word.bbox[3] for word in words) + 10
-        
-        if self.verbose:
-            print(f"[EnhancedLayoutDetector] Analyzing {len(words)} words, page w×h: {page_width:.1f}×{page_height:.1f}")
-        
-        # Step 1: Column detection
-        column_boundaries, detection_method = self._detect_columns_by_y_overlap(words, page_width)
-        
-        # Step 2: FALLBACK - Try gap-based detection
-        if len(column_boundaries) == 1:
-            gap_boundaries = self._detect_columns_by_gaps(words, page_width)
-            if len(gap_boundaries) > 1:
-                column_boundaries = gap_boundaries
-                detection_method = 'gap'
-                if self.verbose:
-                    print(f"  Fallback: Using gap-based detection: {len(column_boundaries)} columns")
-        else:
-            if self.verbose:
-                print(f"  Using Y-overlap detection: {len(column_boundaries)} columns")
-        
-        # Step 3: Compute histogram for metadata
-        histogram = self._compute_histogram(words, page_width)
-        smoothed_histogram = self._smooth_histogram(histogram)
-        peaks = self._find_peaks_adaptive(smoothed_histogram, len(column_boundaries))
-        valleys = self._find_valleys_adaptive(smoothed_histogram, column_boundaries)
-        
-        # Step 4: NEW - Band-wise gutter metrics (primary, fast)
-        gm = self._bandwise_gutter_metrics(
-            words, page_width, page_height,
-            bins=max(300, int(page_width / max(1, self.bin_width))),
-            band_count=60, center_tol=0.15, zero_valley_max=0.05,
-            min_coverage=0.75, drift_tol=0.05
-        )
-        coverage = gm["coverage"]           # fraction of bands with near-zero gutter
-        header_frac = gm["header_frac"]     # top portion before gutter becomes stable
 
-        if self.verbose:
-            print(f"    Gutter coverage={coverage:.2f}, header_frac={header_frac:.2f}")        # Step 5: DECISION - Check for horizontal sections (PRIMARY signal for Type 3)
-        num_columns = len(column_boundaries)
-        
-        # Count horizontal sections (full-width lines that cross both columns)
-        full_width_lines, has_horizontal_sections = self._detect_horizontal_sections(words, page_width)
-        
-        if self.verbose:
-            print(f"    Horizontal sections: {full_width_lines} full-width lines, has_sections={has_horizontal_sections}")
-        
-        if num_columns >= 2:
-            # We have columns detected - now distinguish Type 2 vs Type 3
-            # Type 3 = columns + horizontal sections crossing them
-            # Type 2 = pure columns, no horizontal sections
-            
-            if has_horizontal_sections:
-                # Has full-width lines crossing columns → Type 3
-                layout_type, type_name, confidence = 3, "hybrid/complex", 0.90
-            elif coverage >= 0.70 and header_frac <= 0.10:
-                # Strong gutter, minimal header → Type 2
-                layout_type, type_name, confidence = 2, "multi-column", 0.92
-            else:
-                # Ambiguous: fall back to secondary signals
-                layout_type, type_name, confidence = self._classify_layout_type(
-                    words, column_boundaries, histogram, smoothed_histogram, peaks, valleys,
-                    page_width, detection_method
-                )
+        # Determine page dimensions
+        page_width = page_width or (max(word.bbox[2] for word in words) + 10)
+        page_height = max(word.bbox[3] for word in words) + 10
+
+        if self.config.verbose:
+            print(f"[EnhancedLayoutDetector] Analyzing {len(words)} words, page w×h: {page_width:.1f}×{page_height:.1f}")
+
+        # Step 1: Bandwise gutter metrics (primary signal)
+        gutter_metrics = self._bandwise_gutter_metrics(words, page_width, page_height)
+        coverage = gutter_metrics["coverage"]
+        header_frac = gutter_metrics["header_frac"]
+
+        # Step 2: Column detection
+        if coverage >= 0.7:
+            # Strong gutter detected → split columns
+            gutter_x = gutter_metrics["gutter_x"]
+            column_boundaries = [(0, gutter_x), (gutter_x, page_width)]
+            detection_method = "gutter"
         else:
-            # Single column
-            layout_type, type_name, confidence = 1, "single-column", 0.90
-        
-        result = LayoutType(
+            # Fallback to Y-overlap based detection
+            column_boundaries, detection_method = self._detect_columns_by_y_overlap(words, page_width)
+
+        num_columns = len(column_boundaries)
+
+        # Step 3: Histogram and valley analysis
+        histogram, peaks, valleys, valley_depth_ratio = self._compute_histogram(words, page_width, num_columns)
+
+        # Step 4: Line grouping and horizontal sections
+        lines = self._group_words_into_lines(words)
+        full_width_count, has_horizontal_sections = self._detect_horizontal_sections(lines, page_width)
+
+        # Step 5: Y-overlap score
+        y_overlap_ratio = self._compute_y_overlap(words)
+
+        # Step 6: Final layout classification
+        layout_type, type_name, confidence = self._classify_layout(
+            num_columns,
+            coverage,
+            header_frac,
+            valley_depth_ratio,
+            has_horizontal_sections,
+            y_overlap_ratio
+        )
+
+        metadata = {
+            "total_words": len(words),
+            "column_boundaries": column_boundaries,
+            "histogram": histogram,
+            "peaks": peaks,
+            "valleys": valleys,
+            "gutter_metrics": gutter_metrics,
+            "detection_method": detection_method,
+            "full_width_lines": full_width_count,
+            "y_overlap_ratio": y_overlap_ratio,
+            "valley_depth_ratio": valley_depth_ratio
+        }
+
+        if self.config.verbose:
+            print(f"[EnhancedLayoutDetector] Layout Type: {type_name} (Type {layout_type}), Confidence: {confidence:.2f}")
+            print(f"  - Detection method: {detection_method}")
+            print(f"  - Gutter coverage: {coverage:.2f}, Header fraction: {header_frac:.2f}")
+            print(f"  - Y-overlap ratio: {y_overlap_ratio:.3f}, Valley depth: {valley_depth_ratio:.3f}")
+
+        return LayoutType(
             type=layout_type,
             type_name=type_name,
             num_columns=num_columns,
@@ -155,670 +133,332 @@ class EnhancedLayoutDetector(BaseLayoutDetector):
             valleys=valleys,
             confidence=confidence,
             page_width=page_width,
-            metadata={
-                'total_words': len(words),
-                'peak_count': len(peaks),
-                'valley_count': len(valleys),
-                'max_histogram_value': max(histogram.values()) if histogram else 0,
-                'detection_method': detection_method,
-                'gutter_metrics': gm
-            }
+            metadata=metadata
         )
-        
-        if self.verbose:
-            print(f"  Layout Type: {result.type_name} (Type {result.type})")
-            print(f"  Columns: {result.num_columns}")
-            print(f"  Confidence: {result.confidence:.1%}")
-        
-        return result
-    
-    def _classify_layout_type(
+
+    # =========================================
+    # Classification Logic
+    # =========================================
+
+    def _classify_layout(
         self,
-        words: List[WordMetadata],
-        column_boundaries: List[Tuple[float, float]],
-        histogram: Dict[int, int],
-        smoothed_histogram: Dict[int, float],
-        peaks: List[int],
-        valleys: List[int],
-        page_width: float,
-        detection_method: str
+        num_columns: int,
+        coverage: float,
+        header_frac: float,
+        valley_depth_ratio: float,
+        has_horizontal: bool,
+        y_overlap_ratio: float
     ) -> Tuple[int, str, float]:
         """
-        Classify layout as Type 1, 2, or 3 using HISTOGRAM VALLEY DEPTH as primary signal
+        Classify layout type based on multiple signals.
         
-        Algorithm:
-        1. Compute normalized X-density histogram
-        2. Find peaks (column centers)
-        3. Measure valley depth between peaks
-        4. Validate with Y-overlap and horizontal sections
-        
-        Type 1: Single column (horizontal flow)
-        Type 2: Clean vertical columns → deep valley (< 40% of peak)
-        Type 3: Complex/hybrid → shallow valley (≥ 40% of peak) OR high Y-overlap
-        
-        Returns:
-            Tuple of (layout_type, type_name, confidence)
+        Type 1: Single column
+        Type 2: Multi-column (clean separation)
+        Type 3: Hybrid/complex (mixed layout with headers)
         """
-        num_columns = len(column_boundaries)
-        
-        # Type 1: Single column
+        # Type 1: single column
         if num_columns == 1:
             return 1, "single-column", 0.9
-        
-        # ============================================================
-        # PRIMARY SIGNAL: Histogram Valley Depth Analysis
-        # ============================================================
-        valley_depth_ratio, valley_depth_score = self._compute_valley_depth(
-            words, page_width, smoothed_histogram, peaks
-        )
-        
-        # ============================================================
-        # SECONDARY SIGNAL: Y-Overlap Consistency Check
-        # ============================================================
-        mean_y_overlap = self._compute_y_overlap_ratio(words)
-        
-        # ============================================================
-        # TERTIARY SIGNAL: Horizontal Sections
-        # ============================================================
-        full_width_lines, has_horizontal_sections = self._detect_horizontal_sections(
-            words, page_width
-        )
-        
-        # ============================================================
-        # ADDITIONAL SIGNAL: Column Balance
-        # ============================================================
-        col_widths = [end - start for start, end in column_boundaries]
-        width_ratio = min(col_widths) / max(col_widths) if max(col_widths) > 0 else 0
-        is_balanced = width_ratio > 0.6        # ============================================================
-        # DECISION LOGIC (Simple and Clear)
-        # ============================================================
-        
-        # Type 2: Pure 2-column layout with NO horizontal sections
-        # Type 3: 2-column layout WITH horizontal sections crossing both columns
-        
-        # Key insight: If we detected 2 columns, the distinction is ONLY about
-        # whether there are horizontal sections (full-width lines) or not
-        
-        if num_columns >= 2:
-            # We have columns detected
-            # Type 3 = has horizontal sections (typically headers at top)
-            # Type 2 = NO horizontal sections (pure columns)
-            
-            if has_horizontal_sections:
-                # Has full-width lines crossing both columns → Type 3
-                is_type3 = True
-                confidence = 0.90
-                
-                if self.verbose:
-                    print(f"    ════════════════════════════════════════")
-                    print(f"    Type 2/3 Classification:")
-                    print(f"    ════════════════════════════════════════")
-                    print(f"    Columns detected: {num_columns}")
-                    print(f"    Horizontal sections: {full_width_lines} lines")
-                    print(f"    → Type 3 (hybrid with horizontal headers)")
-                    print(f"    ════════════════════════════════════════")
-                
-                return 3, "hybrid/complex", confidence
+
+        # Strong gutter logic
+        if coverage >= 0.7:
+            if header_frac <= 0.05:
+                # Clean multi-column without significant header
+                return 2, "multi-column", 0.92
             else:
-                # No horizontal sections → Pure Type 2
-                is_type2 = True
-                confidence = 0.90
-                
-                if self.verbose:
-                    print(f"    ════════════════════════════════════════")
-                    print(f"    Type 2/3 Classification:")
-                    print(f"    ════════════════════════════════════════")
-                    print(f"    Columns detected: {num_columns}")
-                    print(f"    Horizontal sections: {full_width_lines} lines")
-                    print(f"    → Type 2 (pure multi-column)")
-                    print(f"    ════════════════════════════════════════")
-                
-                return 2, "multi-column", confidence
-        
-        # Otherwise, use multi-signal weighted classification
-        # Score each signal (0-1 scale, higher = more Type 3)
+                # Multi-column with header section
+                return 3, "hybrid/complex", 0.92
+
+        # Fallback: weighted scoring based on multiple signals
         signals = {
-            'valley_depth': valley_depth_score,  # Primary (weight: 0.4)
-            'y_overlap': min(mean_y_overlap * 4, 1.0),  # Secondary (weight: 0.35) - more sensitive
-            'horizontal': 1.0 if has_horizontal_sections else 0.0,  # Tertiary (weight: 0.25)
+            "valley_depth": min(valley_depth_ratio / self.config.valley_threshold, 1.0),
+            "y_overlap": min(y_overlap_ratio * 5, 1.0),
+            "horizontal": 1.0 if has_horizontal else 0.0
         }
         
-        # Weighted combination (rebalanced for better Type 3 detection)
+        # Type 3 score: higher values suggest complex/hybrid layout
         type3_score = (
-            signals['valley_depth'] * 0.40 +
-            signals['y_overlap'] * 0.35 +
-            signals['horizontal'] * 0.25
+            0.4 * signals["valley_depth"] +
+            0.35 * signals["y_overlap"] +
+            0.25 * signals["horizontal"]
         )
         
-        # Classification threshold (lowered for better Type 3 detection)
-        is_type3 = type3_score > 0.35  # Lowered from 0.45 for better sensitivity
-        
-        # Confidence calculation
-        confidence = 0.70 + min(abs(type3_score - 0.5) * 0.4, 0.25)
-        
-        if self.verbose:
-            print(f"    ════════════════════════════════════════")
-            print(f"    Type 2/3 Classification Signals:")
-            print(f"    ════════════════════════════════════════")
-            print(f"    PRIMARY:")
-            print(f"      • Valley depth ratio: {valley_depth_ratio:.3f} (score: {signals['valley_depth']:.2f})")
-            print(f"        → {'SHALLOW (Type 3)' if valley_depth_ratio >= self.valley_threshold else 'DEEP (Type 2)'}")
-            print(f"    SECONDARY:")
-            print(f"      • Y-overlap ratio: {mean_y_overlap:.3f} (score: {signals['y_overlap']:.2f})")
-            print(f"        → {'HIGH (Type 3)' if mean_y_overlap > 0.20 else 'LOW (Type 2)'}")
-            print(f"    TERTIARY:")
-            print(f"      • Horizontal sections: {full_width_lines} lines (score: {signals['horizontal']:.2f})")
-            print(f"        → {'YES (Type 3)' if has_horizontal_sections else 'NO'}")
-            print(f"    ADDITIONAL:")
-            print(f"      • Column balance: {width_ratio:.2f} ({'balanced' if is_balanced else 'unbalanced'})")
-            print(f"      • Detection method: {detection_method}")
-            print(f"    ────────────────────────────────────────")
-            print(f"    FINAL: Type 3 score = {type3_score:.3f} → {'Type 3' if is_type3 else 'Type 2'}")
-            print(f"    ════════════════════════════════════════")
+        is_type3 = type3_score > 0.35
+        confidence = 0.7 + min(abs(type3_score - 0.5) * 0.4, 0.25)
         
         if is_type3:
             return 3, "hybrid/complex", confidence
         else:
             return 2, "multi-column", confidence
-    
-    def _compute_valley_depth(
+
+    # =========================================
+    # Core Helper Functions
+    # =========================================
+
+    def _compute_histogram(
         self,
         words: List[WordMetadata],
         page_width: float,
-        smoothed_histogram: Dict[int, float],
-        peaks: List[int]
-    ) -> Tuple[float, float]:
+        expected_columns: int
+    ) -> Tuple[np.ndarray, List[float], List[float], float]:
         """
-        Compute valley depth ratio using normalized X-density histogram
+        Compute X-density histogram and detect peaks/valleys.
         
         Returns:
-            Tuple of (valley_depth_ratio, type3_score)
-            - valley_depth_ratio: deepest_valley / max_peak (0-1)
-            - type3_score: 0-1 score (higher = more Type 3)
+            - histogram: Smoothed normalized histogram
+            - peaks_x: X-positions of density peaks
+            - valleys_x: X-positions of density valleys
+            - valley_depth_ratio: Minimum normalized valley depth
         """
-        if not smoothed_histogram or len(peaks) < 2:
-            # No clear peaks → assume shallow valley
-            return 1.0, 1.0
+        bins = max(200, int(page_width / 2))
+        x_centers = np.array([(w.bbox[0] + w.bbox[2]) / 2 for w in words])
+        hist_values, bin_edges = np.histogram(x_centers, bins=bins, range=(0, page_width))
+
+        # Smooth histogram with Gaussian filter
+        try:
+            from scipy.ndimage import gaussian_filter1d
+            from scipy.signal import find_peaks
+            hist_smooth = gaussian_filter1d(hist_values.astype(float), sigma=3)
+        except ImportError:
+            # Fallback to simple convolution if scipy not available
+            kernel = np.ones(5) / 5
+            hist_smooth = np.convolve(hist_values.astype(float), kernel, mode='same')
         
-        max_val = max(smoothed_histogram.values())
-        
-        # Find deepest valley between peaks
-        valley_values = []
-        for i in range(len(peaks) - 1):
-            peak1 = peaks[i]
-            peak2 = peaks[i + 1]
+        hist_smooth /= max(hist_smooth.max(), 1.0)  # normalize 0-1
+
+        # Find peaks and valleys
+        try:
+            from scipy.signal import find_peaks
+            peaks_idx, _ = find_peaks(hist_smooth, distance=bins // max(1, expected_columns))
+            valleys_idx = []
+            valley_depth_ratio = 1.0
             
-            # Find minimum between peaks
-            min_val = float('inf')
-            for bin_idx in range(peak1, peak2 + 1):
-                val = smoothed_histogram.get(bin_idx, 0)
-                if val < min_val:
-                    min_val = val
+            if len(peaks_idx) >= 2:
+                for i in range(len(peaks_idx) - 1):
+                    valley_range = hist_smooth[peaks_idx[i]:peaks_idx[i+1]+1]
+                    if len(valley_range) > 0:
+                        min_val = valley_range.min()
+                        valleys_idx.append(int(np.argmin(valley_range)) + peaks_idx[i])
+                
+                if valleys_idx:
+                    valley_depth_ratio = min(hist_smooth[valleys_idx])
+        except ImportError:
+            # Fallback: simple peak detection
+            peaks_idx = []
+            valleys_idx = []
+            valley_depth_ratio = 1.0
             
-            valley_values.append(min_val)
-        
-        if not valley_values:
-            return 1.0, 1.0
-        
-        deepest_valley = min(valley_values)
-        valley_depth_ratio = deepest_valley / max_val if max_val > 0 else 1.0
-        
-        # Convert to Type 3 score (0-1)
-        # valley_depth < 0.2 → Type 2 (score 0)
-        # valley_depth > 0.6 → Type 3 (score 1)
-        if valley_depth_ratio < 0.2:
-            type3_score = 0.0
-        elif valley_depth_ratio > 0.6:
-            type3_score = 1.0
-        else:
-            # Linear interpolation
-            type3_score = (valley_depth_ratio - 0.2) / 0.4
-        
-        return valley_depth_ratio, type3_score
-    
-    def _compute_y_overlap_ratio(self, words: List[WordMetadata]) -> float:
+            for i in range(1, len(hist_smooth) - 1):
+                if hist_smooth[i] > hist_smooth[i-1] and hist_smooth[i] > hist_smooth[i+1]:
+                    peaks_idx.append(i)
+                elif hist_smooth[i] < hist_smooth[i-1] and hist_smooth[i] < hist_smooth[i+1]:
+                    valleys_idx.append(i)
+            
+            if len(peaks_idx) >= 2 and valleys_idx:
+                valley_depth_ratio = min(hist_smooth[valleys_idx])
+
+        # Convert bin indices to x positions
+        peaks_x = [float(bin_edges[p]) for p in peaks_idx]
+        valleys_x = [float(bin_edges[v]) for v in valleys_idx]
+
+        return hist_smooth, peaks_x, valleys_x, valley_depth_ratio
+
+    def _compute_y_overlap(self, words: List[WordMetadata]) -> float:
         """
-        Compute mean Y-overlap ratio across all word pairs
-        
-        High overlap (>0.2) → likely Type 3
-        Low overlap (<0.15) → likely Type 2
-        
-        Returns:
-            Mean Y-overlap ratio (0-1)
+        Compute mean Y-overlap ratio between words.
+        Higher values suggest words at similar Y-positions (side-by-side).
         """
         if len(words) < 2:
             return 0.0
-        
-        # Sample pairs to avoid O(n²) complexity
-        import random
-        max_pairs = min(1000, len(words) * (len(words) - 1) // 2)
-        
+
+        y0 = np.array([w.bbox[1] for w in words])
+        y1 = np.array([w.bbox[3] for w in words])
+        heights = y1 - y0
+        n = len(words)
+
         overlap_ratios = []
-        pairs_checked = 0
-        
-        for i in range(len(words)):
-            if pairs_checked >= max_pairs:
-                break
-            
-            # Sample a few pairs per word
-            sample_size = min(10, len(words) - i - 1)
-            if sample_size <= 0:
-                continue
-            
-            indices = random.sample(range(i + 1, len(words)), sample_size)
-            
-            for j in indices:
-                word_a = words[i]
-                word_b = words[j]
-                
-                # Y overlap
-                y_overlap = max(0, min(word_a.bbox[3], word_b.bbox[3]) - max(word_a.bbox[1], word_b.bbox[1]))
-                h_min = min(word_a.bbox[3] - word_a.bbox[1], word_b.bbox[3] - word_b.bbox[1])
-                
+        for i in range(n - 1):
+            yi0, yi1 = y0[i], y1[i]
+            hi = heights[i]
+            for j in range(i + 1, n):
+                yj0, yj1 = y0[j], y1[j]
+                hj = heights[j]
+                h_min = min(hi, hj)
                 if h_min > 0:
-                    overlap_ratios.append(y_overlap / h_min)
-                
-                pairs_checked += 1
-                if pairs_checked >= max_pairs:
-                    break
+                    overlap = max(0, min(yi1, yj1) - max(yi0, yj0))
+                    overlap_ratios.append(overlap / h_min)
         
-        return np.mean(overlap_ratios) if overlap_ratios else 0.0
-    
+        return float(np.mean(overlap_ratios)) if overlap_ratios else 0.0
+
+    def _group_words_into_lines(self, words: List[WordMetadata]) -> List[Tuple[float, List[WordMetadata]]]:
+        """
+        Group words into horizontal lines based on Y-coordinate proximity.
+        
+        Returns:
+            List of (y_center, words) tuples sorted by Y position
+        """
+        lines = defaultdict(list)
+        for w in words:
+            y_center = (w.bbox[1] + w.bbox[3]) / 2
+            placed = False
+            for line_y in list(lines.keys()):
+                if abs(y_center - line_y) <= self.config.y_tolerance:
+                    lines[line_y].append(w)
+                    placed = True
+                    break
+            if not placed:
+                lines[y_center].append(w)
+        
+        return sorted(lines.items(), key=lambda x: x[0])
+
     def _detect_horizontal_sections(
         self,
-        words: List[WordMetadata],
+        lines: List[Tuple[float, List[WordMetadata]]],
         page_width: float
     ) -> Tuple[int, bool]:
         """
-        Detect horizontal sections (full-width lines)
+        Detect full-width horizontal sections (e.g., headers, section titles).
         
         Returns:
-            Tuple of (full_width_lines_count, has_horizontal_sections)
+            - count: Number of full-width lines
+            - has_horizontal: Boolean indicating if threshold is met
         """
-        lines = self._group_words_into_lines(words)
-        full_width_lines = 0
-        
-        for y_pos, line_words in lines:
-            line_words.sort(key=lambda w: w.bbox[0])
-            x_start = line_words[0].bbox[0]
-            x_end = line_words[-1].bbox[2]
+        count = 0
+        for y, line_words in lines:
+            x_start = min(w.bbox[0] for w in line_words)
+            x_end = max(w.bbox[2] for w in line_words)
             width = x_end - x_start
-            
-            if width > page_width * 0.75:  # Spans >75% of page
-                full_width_lines += 1
+            if width >= page_width * self.config.full_width_fraction:
+                count += 1
         
-        has_horizontal_sections = full_width_lines >= 3  # At least 3 full-width lines
-        
-        return full_width_lines, has_horizontal_sections
-    
-    def _detect_columns_by_y_overlap(self, words: List[WordMetadata], page_width: float) -> Tuple[List[Tuple[float, float]], str]:
-        """
-        Detect columns by analyzing Y-overlap patterns.
-        
-        Type 3 layouts have:
-        1. Left column: Lines starting on left side
-        2. Right column: Lines starting on right side
-        3. Overlapping Y-ranges (side-by-side content)
-        
-        Args:
-            words: List of words
-            page_width: Page width
-            
-        Returns:
-            Tuple of (column_boundaries, detection_method)
-        """
-        if not words or len(words) < 10:
-            return [(0, page_width)], 'single_column'
-        
-        # Group words into lines by Y-position
-        lines = self._group_words_into_lines(words)
-        
-        if len(lines) < 3:
-            return [(0, page_width)], 'single_column'
-        
-        # Analyze line structure
-        mid_x = page_width / 2
-        left_lines = []  # Lines starting on left
-        right_lines = []  # Lines starting on right
-        full_width_lines = []  # Lines spanning full width
-        
-        for y_pos, line_words in lines:
-            line_words.sort(key=lambda w: w.bbox[0])
-            x_start = line_words[0].bbox[0]
-            x_end = line_words[-1].bbox[2]
-            width = x_end - x_start
-              # Classify line based on position and width
-            if width > page_width * 0.75:  # Spans >75% of page
-                full_width_lines.append((y_pos, x_start, x_end, line_words))
-            elif x_start < mid_x * 0.6:  # Starts on left side
-                if x_end < mid_x * 1.3:  # Doesn't extend too far right
-                    left_lines.append((y_pos, x_start, x_end, line_words))
-                else:
-                    full_width_lines.append((y_pos, x_start, x_end, line_words))
-            elif x_start > mid_x * 0.7:  # Starts on right side
-                right_lines.append((y_pos, x_start, x_end, line_words))
-            else:
-                full_width_lines.append((y_pos, x_start, x_end, line_words))
-        
-        if self.verbose:
-            print(f"    Line classification: {len(left_lines)} left, {len(right_lines)} right, {len(full_width_lines)} full-width")
-        
-        # Check for 2-column pattern: left and right columns with overlapping Y-ranges
-        # This detects BOTH Type 2 and Type 3 (we distinguish them later by checking for horizontal sections)
-        if len(left_lines) >= 3 and len(right_lines) >= 3:
-            left_y_min = min(y for y, _, _, _ in left_lines)
-            left_y_max = max(y for y, _, _, _ in left_lines)
-            right_y_min = min(y for y, _, _, _ in right_lines)
-            right_y_max = max(y for y, _, _, _ in right_lines)
-            
-            # Check for Y-overlap (side-by-side columns)
-            y_overlap = not (left_y_max < right_y_min or right_y_max < left_y_min)
-            
-            if y_overlap:
-                # Calculate overlap percentage
-                overlap_range = min(left_y_max, right_y_max) - max(left_y_min, right_y_min)
-                total_range = max(left_y_max, right_y_max) - min(left_y_min, right_y_min)
-                overlap_pct = (overlap_range / total_range) * 100 if total_range > 0 else 0
-                
-                # Calculate balance between left and right columns
-                left_count = len(left_lines)
-                right_count = len(right_lines)
-                balance_ratio = min(left_count, right_count) / max(left_count, right_count)
-                
-                # Simple criteria for 2-column layout (Type 2 or Type 3):
-                # 1. At least 20% Y-overlap
-                # 2. At least 3 lines in each column (already checked)
-                # 3. Columns should have reasonable balance (not just a narrow sidebar)
-                has_overlap = overlap_pct > 20
-                has_reasonable_balance = balance_ratio > 0.3  # At least 30% balance
-                
-                if has_overlap and has_reasonable_balance:
-                    # Find column boundary
-                    left_x_max = max(x_end for _, _, x_end, _ in left_lines)
-                    right_x_min = min(x_start for _, x_start, _, _ in right_lines)
-                    col_boundary = (left_x_max + right_x_min) / 2
-                    
-                    # Validate: boundary should be somewhere reasonable (10%-90% range)
-                    if 0.1 * page_width < col_boundary < 0.9 * page_width:
-                        if self.verbose:
-                            print(f"    ✓ 2-column layout detected: Y-overlap={overlap_pct:.1f}%, balance={balance_ratio:.2f}, boundary at x={col_boundary:.1f}")
-                        
-                        return [(0, col_boundary), (col_boundary, page_width)], 'y_overlap'
-                    elif self.verbose:
-                        print(f"    ✗ Boundary too extreme: x={col_boundary:.1f} ({col_boundary/page_width*100:.1f}%)")
-                elif self.verbose:
-                    if not has_overlap:
-                        print(f"    ✗ Insufficient overlap: {overlap_pct:.1f}% < 20%")
-                    if not has_reasonable_balance:
-                        print(f"    ✗ Unbalanced columns: balance={balance_ratio:.2f} < 0.3")
-        
-        # No 2-column pattern found
-        return [(0, page_width)], 'single_column'
-    
-    def _group_words_into_lines(self, words: List[WordMetadata]) -> List[Tuple[float, List[WordMetadata]]]:
-        """
-        Group words into lines based on Y-position
-        
-        Args:
-            words: List of words
-            
-        Returns:
-            List of (y_center, words) tuples, sorted by Y position
-        """
-        lines = defaultdict(list)
-        
-        for word in words:
-            y_center = (word.bbox[1] + word.bbox[3]) / 2
-            
-            # Find existing line or create new one
-            found_line = False
-            for line_y in list(lines.keys()):
-                if abs(y_center - line_y) <= self.y_tolerance:
-                    lines[line_y].append(word)
-                    found_line = True
-                    break
-            
-            if not found_line:
-                lines[y_center] = [word]
-          # Sort by Y position
-        return sorted(lines.items(), key=lambda x: x[0])
-    
+        return count, count >= self.config.horizontal_lines_min
+
     def _bandwise_gutter_metrics(
         self,
         words: List[WordMetadata],
         page_width: float,
-        page_height: float,
-        bins: int = 400,
-        band_count: int = 60,
-        center_tol: float = 0.15,
-        zero_valley_max: float = 0.05,
-        min_coverage: float = 0.75,
-        drift_tol: float = 0.05
+        page_height: float
     ) -> Dict[str, Any]:
         """
-        Fast band-wise gutter detection from word boxes (centers only).
-        Returns dict with coverage, header_frac, gutter_x, per-band minima.
+        Compute gutter metrics by analyzing horizontal bands across the page.
         
-        Args:
-            words: List of word metadata
-            page_width: Page width
-            page_height: Page height
-            bins: Number of x-bins for density histogram
-            band_count: Number of horizontal bands to analyze
-            center_tol: Tolerance for central region search (fraction of page width)
-            zero_valley_max: Maximum valley depth to consider "zero" (Type 2)
-            min_coverage: Minimum coverage needed to detect columns
-            drift_tol: Allowed drift between bands (fraction of page width)
-            
-        Returns:
-            Dict with coverage, header_frac, gutter_x, band_vals
+        This is the primary signal for multi-column detection.
+        Returns coverage (fraction of bands with near-zero gutter density)
+        and header_frac (where stable gutter starts).
         """
-        if not words:
-            return {"coverage": 0.0, "header_frac": 0.0, "gutter_x": page_width/2, "band_vals": []}
+        w, h = page_width, page_height
+        bins = 400
+        band_count = self.config.band_count
 
-        # Normalize helpers
-        w = page_width
-        h = page_height
-        bins = max(100, bins)
-        band_count = max(20, band_count)
-        band_h = h / band_count
-
-        # Pre-extract arrays
-        x0 = np.array([wd.bbox[0] for wd in words], dtype=np.float32)
-        x1 = np.array([wd.bbox[2] for wd in words], dtype=np.float32)
-        y0 = np.array([wd.bbox[1] for wd in words], dtype=np.float32)
-        y1 = np.array([wd.bbox[3] for wd in words], dtype=np.float32)
+        # Extract word coordinates
+        x0 = np.array([word.bbox[0] for word in words])
+        x1 = np.array([word.bbox[2] for word in words])
+        y0 = np.array([word.bbox[1] for word in words])
+        y1 = np.array([word.bbox[3] for word in words])
         xc = (x0 + x1) * 0.5
 
-        # Pre-bin x centers once per band
-        bin_scale = bins / w
-
-        # Initial global density to find central gutter candidate
-        dens_global = np.zeros(bins, dtype=np.float32)
-        # Use all words; bin by center
-        idx_all = np.clip((xc * bin_scale).astype(np.int32), 0, bins-1)
+        # Global X-density to find gutter center
+        dens_global = np.zeros(bins, dtype=float)
+        idx_all = np.clip((xc * bins / w).astype(int), 0, bins - 1)
         np.add.at(dens_global, idx_all, 1.0)
-
-        # Moving-average smooth
-        k = max(7, bins // 100) | 1
-        ker = np.ones(k, np.float32) / k
-        dens_global = np.convolve(dens_global, ker, mode="same")
+        
+        # Smooth global density
+        dens_global = np.convolve(dens_global, np.ones(7) / 7, mode='same')
         dens_global /= max(1.0, dens_global.max())
+        
+        # Find center gutter (minimum in middle region)
+        center_bin = np.argmin(dens_global[bins // 2 - bins // 8: bins // 2 + bins // 8]) + bins // 2 - bins // 8
 
-        center = bins // 2
-        win = int(bins * center_tol)
-        L, R = max(0, center - win), min(bins, center + win)
-        xg_bin = L + int(np.argmin(dens_global[L:R]))
-
-        # Band-wise evaluation with small drift window
-        drift = int(bins * drift_tol)
-        band_vals = []
-        x_positions = []
+        # Analyze each horizontal band
+        band_h = h / band_count
         zero_hits = 0
-        start_band_for_stable = None
+        start_stable = None
         run = 0
-        K = max(4, band_count // 12)  # consecutive bands to call it "started"
+        K = max(4, band_count // 12)  # Minimum consecutive bands for stable gutter
+        band_vals = []
 
         for bi in range(band_count):
             y_top = bi * band_h
             y_bot = min(h, y_top + band_h)
-            # Select words overlapping this band (fast overlap check)
-            overlap = (np.minimum(y1, y_bot) - np.maximum(y0, y_top)) > 0
-            if not np.any(overlap):
-                band_vals.append(1.0)  # treat as non-informative
-                x_positions.append(xg_bin)
+            
+            # Select words in this band
+            mask = np.logical_and(y1 > y_top, y0 < y_bot)
+            if not np.any(mask):
+                band_vals.append(1.0)
                 run = 0
                 continue
-
-            idx = np.clip((xc[overlap] * bin_scale).astype(np.int32), 0, bins-1)
-            dens = np.zeros(bins, dtype=np.float32)
+            
+            # Compute X-density for this band
+            idx = np.clip((xc[mask] * bins / w).astype(int), 0, bins - 1)
+            dens = np.zeros(bins, dtype=float)
             np.add.at(dens, idx, 1.0)
-            dens = np.convolve(dens, ker, mode="same")
+            dens = np.convolve(dens, np.ones(7) / 7, mode='same')
             dens /= max(1.0, dens.max())
 
-            l = max(0, xg_bin - drift)
-            r = min(bins, xg_bin + drift + 1)
-            xi = l + int(np.argmin(dens[l:r]))
-            val = float(dens[xi])
-
+            # Check gutter density
+            l, r = max(0, center_bin - 10), min(bins, center_bin + 11)
+            val = float(dens[l:r].min())
             band_vals.append(val)
-            x_positions.append(xi)
 
-            if val <= zero_valley_max:
+            if val <= self.config.gutter_zero_max:
                 run += 1
-                if start_band_for_stable is None and run >= K:
-                    start_band_for_stable = bi - K + 1
+                if start_stable is None and run >= K:
+                    start_stable = bi - K + 1
                 zero_hits += 1
             else:
                 run = 0
 
-        coverage = zero_hits / max(1, band_count)
-        header_frac = 0.0
-        if start_band_for_stable is not None:
-            header_frac = (start_band_for_stable * band_h) / h
-
-        # Convert gutter bin back to x
-        gutter_x = (np.median(x_positions) / bins) * w
+        coverage = zero_hits / band_count
+        header_frac = 0.0 if start_stable is None else (start_stable * band_h / h)
+        gutter_x = center_bin * w / bins
 
         return {
-            "coverage": float(coverage),
-            "header_frac": float(header_frac),
-            "gutter_x": float(gutter_x),
+            "coverage": coverage,
+            "header_frac": header_frac,
+            "gutter_x": gutter_x,
             "band_vals": band_vals
         }
 
+    def _detect_columns_by_y_overlap(
+        self,
+        words: List[WordMetadata],
+        page_width: float
+    ) -> Tuple[List[Tuple[float, float]], str]:
+        """
+        Fallback column detection using Y-overlap analysis.
+        
+        Groups lines into left/right/full-width categories and determines
+        if there's a clean column split.
+        
+        Returns:
+            - column_boundaries: List of (left, right) tuples
+            - detection_method: String describing the method used
+        """
+        lines = self._group_words_into_lines(words)
+        mid_x = page_width / 2
+        left_lines = []
+        right_lines = []
+        full_lines = []
 
-# ============================================================
-# Visualization Utility
-# ============================================================
-
-def visualize_histogram(
-    layout_result: LayoutType,
-    words: List[WordMetadata],
-    save_path: Optional[str] = None,
-    show: bool = True
-):
-    """
-    Visualize X-density histogram for layout debugging
-    
-    Shows:
-    - Smoothed histogram
-    - Detected peaks (column centers)
-    - Valley depth
-    - Layout type classification
-    
-    Args:
-        layout_result: LayoutType result from detector
-        words: Original words
-        save_path: Optional path to save figure
-        show: Whether to display figure
-    """
-    try:
-        import matplotlib.pyplot as plt
-    except ImportError:
-        print("Warning: matplotlib not installed. Install with: pip install matplotlib")
-        return
-    
-    histogram = layout_result.histogram
-    peaks = layout_result.peaks
-    
-    if not histogram:
-        print("No histogram data to visualize")
-        return
-    
-    # Compute smoothed histogram
-    from scipy.ndimage import gaussian_filter1d
-    
-    bins = sorted(histogram.keys())
-    values = [histogram[b] for b in bins]
-    
-    # Normalize
-    max_val = max(values) if values else 1
-    values_norm = [v / max_val for v in values]
-    
-    # Smooth
-    smoothed = gaussian_filter1d(values_norm, sigma=5)
-    
-    # Create figure
-    fig, ax = plt.subplots(figsize=(12, 6))
-    
-    # Plot histogram
-    ax.plot(bins, smoothed, linewidth=2, label='X-Density Histogram')
-    ax.fill_between(bins, 0, smoothed, alpha=0.3)
-    
-    # Mark peaks
-    for peak in peaks:
-        if peak in bins:
-            peak_idx = bins.index(peak)
-            ax.axvline(peak, color='green', linestyle='--', alpha=0.7, label=f'Peak at x={peak}')
-            ax.plot(peak, smoothed[peak_idx], 'go', markersize=10)
-    
-    # Mark valleys
-    if len(peaks) >= 2:
-        for i in range(len(peaks) - 1):
-            valley_start = peaks[i]
-            valley_end = peaks[i + 1]
+        for y, line_words in lines:
+            x_start = min(w.bbox[0] for w in line_words)
+            x_end = max(w.bbox[2] for w in line_words)
+            width = x_end - x_start
             
-            # Find minimum
-            min_val = 1.0
-            min_pos = valley_start
-            for j, b in enumerate(bins):
-                if valley_start <= b <= valley_end:
-                    if smoothed[j] < min_val:
-                        min_val = smoothed[j]
-                        min_pos = b
-            
-            ax.axvline(min_pos, color='red', linestyle=':', alpha=0.7, label=f'Valley (depth={min_val:.2f})')
-            ax.plot(min_pos, min_val, 'ro', markersize=8)
-    
-    # Labels
-    ax.set_xlabel('X Position (normalized)', fontsize=12)
-    ax.set_ylabel('Normalized Density', fontsize=12)
-    ax.set_title(
-        f'Layout Type: {layout_result.type_name} (Type {layout_result.type})\n'
-        f'Columns: {layout_result.num_columns}, Confidence: {layout_result.confidence:.1%}',
-        fontsize=14,
-        fontweight='bold'
-    )
-    ax.grid(True, alpha=0.3)
-    ax.set_ylim(0, 1.1)
-    
-    # Legend (remove duplicates)
-    handles, labels = ax.get_legend_handles_labels()
-    by_label = dict(zip(labels, handles))
-    ax.legend(by_label.values(), by_label.keys(), loc='upper right')
-    
-    plt.tight_layout()
-    
-    if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches='tight')
-        print(f"Saved histogram visualization to: {save_path}")
-    
-    if show:
-        plt.show()
-    else:
-        plt.close()
+            if width >= page_width * self.config.full_width_fraction:
+                full_lines.append(line_words)
+            elif x_start < mid_x * 0.6:
+                left_lines.append(line_words)
+            elif x_start > mid_x * 0.4:
+                right_lines.append(line_words)
+            else:
+                full_lines.append(line_words)
 
-
-# Make it easy to import
-__all__ = ['EnhancedLayoutDetector', 'LayoutType', 'visualize_histogram']
+        # Require minimum lines in each column
+        if len(left_lines) >= 3 and len(right_lines) >= 3:
+            left_x_max = max(max(w.bbox[2] for w in line) for line in left_lines)
+            right_x_min = min(min(w.bbox[0] for w in line) for line in right_lines)
+            col_boundary = (left_x_max + right_x_min) / 2
+            return [(0, col_boundary), (col_boundary, page_width)], "y_overlap"
+        
+        return [(0, page_width)], "single_column"
