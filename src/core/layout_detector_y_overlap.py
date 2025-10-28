@@ -446,9 +446,10 @@ class EnhancedLayoutDetector(BaseLayoutDetector):
                 right_lines.append((y_pos, x_start, x_end, line_words))
             else:
                 full_width_lines.append((y_pos, x_start, x_end, line_words))
-        
         if self.verbose:
-            print(f"    Line classification: {len(left_lines)} left, {len(right_lines)} right, {len(full_width_lines)} full-width")          # Check for Type 3 pattern: left and right columns with overlapping Y-ranges
+            print(f"    Line classification: {len(left_lines)} left, {len(right_lines)} right, {len(full_width_lines)} full-width")
+        
+        # Check for Type 3 pattern: left and right columns with overlapping Y-ranges
         if len(left_lines) >= 3 and len(right_lines) >= 3:
             left_y_min = min(y for y, _, _, _ in left_lines)
             left_y_max = max(y for y, _, _, _ in left_lines)
@@ -467,17 +468,23 @@ class EnhancedLayoutDetector(BaseLayoutDetector):
                 # Calculate balance between left and right columns
                 left_count = len(left_lines)
                 right_count = len(right_lines)
-                total_count = left_count + right_count
+                column_lines = left_count + right_count
+                total_lines = column_lines + len(full_width_lines)
                 balance_ratio = min(left_count, right_count) / max(left_count, right_count)
                 
-                # Type 3 criteria (RELAXED for better detection):
-                # 1. At least 20% overlap (further relaxed from 25%)
-                # 2. At least 3 lines in each column (already checked above)
-                # 3. Column boundary near middle of page
-                # NOTE: Balance ratio check removed - even 5L/43R can be valid Type 3
-                has_overlap = overlap_pct > 20  # More relaxed threshold
+                # CRITICAL: Calculate column-to-fullwidth ratio
+                # Type 3: Most lines are in columns (column_lines > full_width_lines)
+                # Type 2 with sidebar: Most lines are full-width (full_width_lines > column_lines)
+                column_ratio = column_lines / total_lines if total_lines > 0 else 0
                 
-                if has_overlap:
+                # Type 3 criteria (STRICT for better precision):
+                # 1. At least 20% Y-overlap
+                # 2. At least 3 lines in each column (already checked)
+                # 3. Column lines should dominate (>50% of total lines)
+                # 4. Column boundary near middle of page
+                has_overlap = overlap_pct > 20
+                has_dominant_columns = column_ratio > 0.50  # NEW: At least 50% of lines are in columns                
+                if has_overlap and has_dominant_columns:
                     # Find column boundary
                     left_x_max = max(x_end for _, _, x_end, _ in left_lines)
                     right_x_min = min(x_start for _, x_start, _, _ in right_lines)
@@ -486,13 +493,17 @@ class EnhancedLayoutDetector(BaseLayoutDetector):
                     # Validate: boundary should be somewhere reasonable (10%-90% range)
                     if 0.1 * page_width < col_boundary < 0.9 * page_width:
                         if self.verbose:
-                            print(f"    ✓ Type 3 detected: Y-overlap={overlap_pct:.1f}%, balance={balance_ratio:.2f}, boundary at x={col_boundary:.1f}")
+                            print(f"    ✓ Type 3 detected: Y-overlap={overlap_pct:.1f}%, column_ratio={column_ratio:.2f}, balance={balance_ratio:.2f}, boundary at x={col_boundary:.1f}")
                         
                         return [(0, col_boundary), (col_boundary, page_width)], 'y_overlap'
                     elif self.verbose:
                         print(f"    ✗ Boundary too far from reasonable range: x={col_boundary:.1f} ({col_boundary/page_width*100:.1f}%)")
                 elif self.verbose:
-                    print(f"    ✗ Insufficient overlap: {overlap_pct:.1f}% < 20%")
+                    if not has_overlap:
+                        print(f"    ✗ Insufficient overlap: {overlap_pct:.1f}% < 20%")
+                    if not has_dominant_columns:
+                        print(f"    ✗ Column lines not dominant: {column_ratio:.1%} (need >50%)")
+                        print(f"      → This looks like Type 2 with sidebar (full-width dominant)")
         
         # No Type 3 pattern found
         return [(0, page_width)], 'single_column'
