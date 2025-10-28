@@ -34,17 +34,17 @@ class EnhancedLayoutDetector(BaseLayoutDetector):
     3. Horizontal section detection
     4. Column balance analysis
     """
-    
-    def __init__(self, *args, valley_threshold: float = 0.4, **kwargs):
+      
+    def __init__(self, *args, valley_threshold: float = 0.3, **kwargs):
         """
         Args:
-            valley_threshold: Valley depth threshold for Type 2 (default 0.4)
+            valley_threshold: Valley depth threshold for Type 2 (default 0.3)
                             Valley depth < threshold → Type 2 (clean columns)
                             Valley depth ≥ threshold → Type 3 (hybrid)
         """
         super().__init__(*args, **kwargs)
         self.y_tolerance = 5  # Points tolerance for same line
-        self.valley_threshold = valley_threshold  # 0.4 means valley must drop to <40% of peak
+        self.valley_threshold = valley_threshold  # 0.3 means valley must drop to <30% of peak (more sensitive)
     
     def detect_layout(self, words: List[WordMetadata], page_width: float = None) -> LayoutType:
         """
@@ -84,15 +84,14 @@ class EnhancedLayoutDetector(BaseLayoutDetector):
         
         # Step 1: Try Y-overlap analysis for column detection
         column_boundaries, detection_method = self._detect_columns_by_y_overlap(words, page_width)
-        
-        # Step 2: FALLBACK - Try gap-based detection
+          # Step 2: FALLBACK - Try gap-based detection
         if len(column_boundaries) == 1:
             gap_boundaries = self._detect_columns_by_gaps(words, page_width)
             if len(gap_boundaries) > 1:
                 column_boundaries = gap_boundaries
                 detection_method = 'gap'
                 if self.verbose:
-                    print(f"  Using gap-based detection: {len(column_boundaries)} columns")
+                    print(f"  Fallback: Using gap-based detection: {len(column_boundaries)} columns")
         else:
             if self.verbose:
                 print(f"  Using Y-overlap detection: {len(column_boundaries)} columns")
@@ -197,23 +196,22 @@ class EnhancedLayoutDetector(BaseLayoutDetector):
         # ============================================================
         # DECISION LOGIC (Weighted Multi-Signal Classification)
         # ============================================================
-        
-        # Score each signal (0-1 scale, higher = more Type 3)
+          # Score each signal (0-1 scale, higher = more Type 3)
         signals = {
-            'valley_depth': valley_depth_score,  # Primary (weight: 0.5)
-            'y_overlap': min(mean_y_overlap * 5, 1.0),  # Secondary (weight: 0.3)
-            'horizontal': 1.0 if has_horizontal_sections else 0.0,  # Tertiary (weight: 0.2)
+            'valley_depth': valley_depth_score,  # Primary (weight: 0.4)
+            'y_overlap': min(mean_y_overlap * 4, 1.0),  # Secondary (weight: 0.35) - more sensitive
+            'horizontal': 1.0 if has_horizontal_sections else 0.0,  # Tertiary (weight: 0.25)
         }
         
-        # Weighted combination
+        # Weighted combination (rebalanced for better Type 3 detection)
         type3_score = (
-            signals['valley_depth'] * 0.5 +
-            signals['y_overlap'] * 0.3 +
-            signals['horizontal'] * 0.2
+            signals['valley_depth'] * 0.40 +
+            signals['y_overlap'] * 0.35 +
+            signals['horizontal'] * 0.25
         )
         
-        # Classification threshold
-        is_type3 = type3_score > 0.50  # More than 50% confidence for Type 3
+        # Classification threshold (lowered for better Type 3 detection)
+        is_type3 = type3_score > 0.45  # More than 45% confidence for Type 3
         
         # Confidence calculation
         confidence = 0.70 + min(abs(type3_score - 0.5) * 0.4, 0.25)

@@ -39,12 +39,11 @@ def test_single_resume(pdf_path: str, visualize: bool = False, verbose: bool = T
     if doc_type.file_type != 'pdf':
         print(f"Error: Only PDF files supported (got {doc_type.file_type})")
         return None
-    
-    # Step 2: Extract words
+      # Step 2: Extract words
     if verbose:
         print("[2/3] Word Extraction")
     word_extractor = WordExtractor(verbose=False)
-    pages_words = word_extractor.extract_words_from_pdf(pdf_path)
+    pages_words = word_extractor.extract_pdf_text_based(pdf_path)
     
     if not pages_words or not pages_words[0]:
         print("Error: No words extracted from PDF")
@@ -53,13 +52,13 @@ def test_single_resume(pdf_path: str, visualize: bool = False, verbose: bool = T
     # Step 3: Layout detection with histogram analysis
     if verbose:
         print("[3/3] Layout Detection with Histogram Analysis\n")
-    
+      
     detector = EnhancedLayoutDetector(
         bin_width=5,
         min_gap_width=20,
         min_column_width=80,
         adaptive_threshold=True,
-        valley_threshold=0.4,  # Valley must drop below 40% for Type 2
+        valley_threshold=0.3,  # Valley must drop below 30% for Type 2 (more sensitive)
         verbose=verbose
     )
     
