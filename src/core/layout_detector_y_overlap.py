@@ -191,7 +191,7 @@ class EnhancedLayoutDetector(BaseLayoutDetector):
             if valley_values:
                 deepest_valley = min(valley_values)
                 valley_depth_ratio = deepest_valley / max_val if max_val > 0 else 1.0
-        
+          
         if self.verbose:
             print(f"    Type 2/3 signals:")
             print(f"      - Width ratio: {width_ratio:.2f} (balanced={is_balanced})")
@@ -200,18 +200,17 @@ class EnhancedLayoutDetector(BaseLayoutDetector):
             print(f"      - Detection method: {detection_method}")
         
         # Decision logic:
-        # Type 3 if ANY of:
-        #   1. Detected via Y-overlap method (indicates side-by-side at same Y-level)
-        #   2. Unbalanced columns (sidebar + main content pattern)
-        #   3. Has horizontal sections mixed with columns
-        #   4. Valley doesn't reach near 0 (ratio >= 0.20)
+        # Type 3 (hybrid/complex) if it has MIXED layout characteristics:
+        #   - Has horizontal sections (full-width) MIXED with vertical columns
+        #   - OR valley doesn't reach near 0 (indicates content crossing columns)
+        #
+        # Type 2 (clean multi-column) if:
+        #   - Clean vertical columns (valley reaches ~0)
+        #   - No significant horizontal sections
+        #   - Even if detected via Y-overlap (sidebar layouts are still Type 2)
         
-        is_type3 = (
-            detection_method == 'y_overlap' or
-            not is_balanced or
-            has_horizontal_sections or
-            valley_depth_ratio >= 0.20
-        )
+        # Type 3 criteria: Has horizontal sections OR shallow valleys
+        is_type3 = has_horizontal_sections or valley_depth_ratio >= 0.20
         
         if is_type3:
             return 3, "hybrid/complex", 0.80
