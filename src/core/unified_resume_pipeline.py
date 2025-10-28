@@ -33,7 +33,6 @@ from .column_segmenter import ColumnSegmenter, Column
 from .line_section_grouper import LineGrouper, SectionDetector, Line, Section
 from .unknown_section_detector import UnknownSectionDetector, UnknownSection
 
-
 @dataclass
 class PipelineResult:
     """Complete pipeline result"""
