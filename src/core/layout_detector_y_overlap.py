@@ -1,18 +1,24 @@
 """
-Enhanced Layout Detection with Y-Overlap Analysis
-==================================================
-Detects Type 3 (hybrid/complex) layouts where columns have overlapping Y-ranges
-but are separated vertically (side-by-side content at same Y-level).
+Enhanced Layout Detection with Histogram Valley Analysis
+=========================================================
+Detects Type 2 vs Type 3 layouts using quantitative histogram analysis.
 
-This solves the problem where gap-based detection fails because:
-1. PDF extraction reads left-to-right, linearizing columns
-2. No horizontal gaps exist between consecutive words
-3. But columns are actually side-by-side visually
+Key Innovation: X-Density Histogram Valley Depth Analysis
+- Type 2: Deep valley (≈0) between column peaks → clean separation
+- Type 3: Shallow valley (>20% of peak) → content crosses columns
+
+Additional Signals:
+1. Y-overlap consistency check
+2. Horizontal section detection
+3. Column balance analysis
+
+Reference: Histogram-based layout classification algorithm
 """
 
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 from dataclasses import dataclass
 from collections import defaultdict
+import numpy as np
 
 from .word_extractor import WordMetadata
 from .layout_detector_histogram import LayoutDetector as BaseLayoutDetector, LayoutType
@@ -20,12 +26,25 @@ from .layout_detector_histogram import LayoutDetector as BaseLayoutDetector, Lay
 
 class EnhancedLayoutDetector(BaseLayoutDetector):
     """
-    Enhanced layout detector that uses Y-overlap analysis for Type 3 detection
+    Enhanced layout detector with histogram valley depth analysis
+    
+    Combines multiple signals for robust Type 2/3 classification:
+    1. X-density histogram valley depth (primary signal)
+    2. Y-overlap ratio (secondary validation)
+    3. Horizontal section detection
+    4. Column balance analysis
     """
     
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, valley_threshold: float = 0.4, **kwargs):
+        """
+        Args:
+            valley_threshold: Valley depth threshold for Type 2 (default 0.4)
+                            Valley depth < threshold → Type 2 (clean columns)
+                            Valley depth ≥ threshold → Type 3 (hybrid)
+        """
         super().__init__(*args, **kwargs)
         self.y_tolerance = 5  # Points tolerance for same line
+        self.valley_threshold = valley_threshold  # 0.4 means valley must drop to <40% of peak
     
     def detect_layout(self, words: List[WordMetadata], page_width: float = None) -> LayoutType:
         """
@@ -100,8 +119,7 @@ class EnhancedLayoutDetector(BaseLayoutDetector):
             peaks=peaks,
             valleys=valleys,
             confidence=confidence,
-            page_width=page_width,
-            metadata={
+            page_width=page_width,            metadata={
                 'total_words': len(words),
                 'peak_count': len(peaks),
                 'valley_count': len(valleys),
@@ -129,15 +147,17 @@ class EnhancedLayoutDetector(BaseLayoutDetector):
         detection_method: str
     ) -> Tuple[int, str, float]:
         """
-        Classify layout as Type 1, 2, or 3 using multiple signals
+        Classify layout as Type 1, 2, or 3 using HISTOGRAM VALLEY DEPTH as primary signal
+        
+        Algorithm:
+        1. Compute normalized X-density histogram
+        2. Find peaks (column centers)
+        3. Measure valley depth between peaks
+        4. Validate with Y-overlap and horizontal sections
         
         Type 1: Single column (horizontal flow)
-        Type 2: Clean vertical columns - balanced, newspaper-style
-        Type 3: Complex/hybrid - unbalanced columns (sidebar + main), mixed with horizontal sections
-        
-        Key differences between Type 2 and Type 3:
-        - Type 2: Balanced columns (similar widths/content), clean gaps
-        - Type 3: Unbalanced (sidebar + main content), often with horizontal headers
+        Type 2: Clean vertical columns → deep valley (< 40% of peak)
+        Type 3: Complex/hybrid → shallow valley (≥ 40% of peak) OR high Y-overlap
         
         Returns:
             Tuple of (layout_type, type_name, confidence)
@@ -148,74 +168,210 @@ class EnhancedLayoutDetector(BaseLayoutDetector):
         if num_columns == 1:
             return 1, "single-column", 0.9
         
-        # For multi-column layouts, use multiple signals to distinguish Type 2 vs Type 3
+        # ============================================================
+        # PRIMARY SIGNAL: Histogram Valley Depth Analysis
+        # ============================================================
+        valley_depth_ratio, valley_depth_score = self._compute_valley_depth(
+            words, page_width, smoothed_histogram, peaks
+        )
         
-        # Signal 1: Column balance (width ratio)
+        # ============================================================
+        # SECONDARY SIGNAL: Y-Overlap Consistency Check
+        # ============================================================
+        mean_y_overlap = self._compute_y_overlap_ratio(words)
+        
+        # ============================================================
+        # TERTIARY SIGNAL: Horizontal Sections
+        # ============================================================
+        full_width_lines, has_horizontal_sections = self._detect_horizontal_sections(
+            words, page_width
+        )
+        
+        # ============================================================
+        # ADDITIONAL SIGNAL: Column Balance
+        # ============================================================
         col_widths = [end - start for start, end in column_boundaries]
         width_ratio = min(col_widths) / max(col_widths) if max(col_widths) > 0 else 0
-        is_balanced = width_ratio > 0.6  # Balanced if columns within 60% of each other
+        is_balanced = width_ratio > 0.6
         
-        # Signal 2: Check for horizontal sections by analyzing line distribution
+        # ============================================================
+        # DECISION LOGIC (Weighted Multi-Signal Classification)
+        # ============================================================
+        
+        # Score each signal (0-1 scale, higher = more Type 3)
+        signals = {
+            'valley_depth': valley_depth_score,  # Primary (weight: 0.5)
+            'y_overlap': min(mean_y_overlap * 5, 1.0),  # Secondary (weight: 0.3)
+            'horizontal': 1.0 if has_horizontal_sections else 0.0,  # Tertiary (weight: 0.2)
+        }
+        
+        # Weighted combination
+        type3_score = (
+            signals['valley_depth'] * 0.5 +
+            signals['y_overlap'] * 0.3 +
+            signals['horizontal'] * 0.2
+        )
+        
+        # Classification threshold
+        is_type3 = type3_score > 0.50  # More than 50% confidence for Type 3
+        
+        # Confidence calculation
+        confidence = 0.70 + min(abs(type3_score - 0.5) * 0.4, 0.25)
+        
+        if self.verbose:
+            print(f"    ════════════════════════════════════════")
+            print(f"    Type 2/3 Classification Signals:")
+            print(f"    ════════════════════════════════════════")
+            print(f"    PRIMARY:")
+            print(f"      • Valley depth ratio: {valley_depth_ratio:.3f} (score: {signals['valley_depth']:.2f})")
+            print(f"        → {'SHALLOW (Type 3)' if valley_depth_ratio >= self.valley_threshold else 'DEEP (Type 2)'}")
+            print(f"    SECONDARY:")
+            print(f"      • Y-overlap ratio: {mean_y_overlap:.3f} (score: {signals['y_overlap']:.2f})")
+            print(f"        → {'HIGH (Type 3)' if mean_y_overlap > 0.20 else 'LOW (Type 2)'}")
+            print(f"    TERTIARY:")
+            print(f"      • Horizontal sections: {full_width_lines} lines (score: {signals['horizontal']:.2f})")
+            print(f"        → {'YES (Type 3)' if has_horizontal_sections else 'NO'}")
+            print(f"    ADDITIONAL:")
+            print(f"      • Column balance: {width_ratio:.2f} ({'balanced' if is_balanced else 'unbalanced'})")
+            print(f"      • Detection method: {detection_method}")
+            print(f"    ────────────────────────────────────────")
+            print(f"    FINAL: Type 3 score = {type3_score:.3f} → {'Type 3' if is_type3 else 'Type 2'}")
+            print(f"    ════════════════════════════════════════")
+        
+        if is_type3:
+            return 3, "hybrid/complex", confidence
+        else:
+            return 2, "multi-column", confidence
+    
+    def _compute_valley_depth(
+        self,
+        words: List[WordMetadata],
+        page_width: float,
+        smoothed_histogram: Dict[int, float],
+        peaks: List[int]
+    ) -> Tuple[float, float]:
+        """
+        Compute valley depth ratio using normalized X-density histogram
+        
+        Returns:
+            Tuple of (valley_depth_ratio, type3_score)
+            - valley_depth_ratio: deepest_valley / max_peak (0-1)
+            - type3_score: 0-1 score (higher = more Type 3)
+        """
+        if not smoothed_histogram or len(peaks) < 2:
+            # No clear peaks → assume shallow valley
+            return 1.0, 1.0
+        
+        max_val = max(smoothed_histogram.values())
+        
+        # Find deepest valley between peaks
+        valley_values = []
+        for i in range(len(peaks) - 1):
+            peak1 = peaks[i]
+            peak2 = peaks[i + 1]
+            
+            # Find minimum between peaks
+            min_val = float('inf')
+            for bin_idx in range(peak1, peak2 + 1):
+                val = smoothed_histogram.get(bin_idx, 0)
+                if val < min_val:
+                    min_val = val
+            
+            valley_values.append(min_val)
+        
+        if not valley_values:
+            return 1.0, 1.0
+        
+        deepest_valley = min(valley_values)
+        valley_depth_ratio = deepest_valley / max_val if max_val > 0 else 1.0
+        
+        # Convert to Type 3 score (0-1)
+        # valley_depth < 0.2 → Type 2 (score 0)
+        # valley_depth > 0.6 → Type 3 (score 1)
+        if valley_depth_ratio < 0.2:
+            type3_score = 0.0
+        elif valley_depth_ratio > 0.6:
+            type3_score = 1.0
+        else:
+            # Linear interpolation
+            type3_score = (valley_depth_ratio - 0.2) / 0.4
+        
+        return valley_depth_ratio, type3_score
+    
+    def _compute_y_overlap_ratio(self, words: List[WordMetadata]) -> float:
+        """
+        Compute mean Y-overlap ratio across all word pairs
+        
+        High overlap (>0.2) → likely Type 3
+        Low overlap (<0.15) → likely Type 2
+        
+        Returns:
+            Mean Y-overlap ratio (0-1)
+        """
+        if len(words) < 2:
+            return 0.0
+        
+        # Sample pairs to avoid O(n²) complexity
+        import random
+        max_pairs = min(1000, len(words) * (len(words) - 1) // 2)
+        
+        overlap_ratios = []
+        pairs_checked = 0
+        
+        for i in range(len(words)):
+            if pairs_checked >= max_pairs:
+                break
+            
+            # Sample a few pairs per word
+            sample_size = min(10, len(words) - i - 1)
+            if sample_size <= 0:
+                continue
+            
+            indices = random.sample(range(i + 1, len(words)), sample_size)
+            
+            for j in indices:
+                word_a = words[i]
+                word_b = words[j]
+                
+                # Y overlap
+                y_overlap = max(0, min(word_a.bbox[3], word_b.bbox[3]) - max(word_a.bbox[1], word_b.bbox[1]))
+                h_min = min(word_a.bbox[3] - word_a.bbox[1], word_b.bbox[3] - word_b.bbox[1])
+                
+                if h_min > 0:
+                    overlap_ratios.append(y_overlap / h_min)
+                
+                pairs_checked += 1
+                if pairs_checked >= max_pairs:
+                    break
+        
+        return np.mean(overlap_ratios) if overlap_ratios else 0.0
+    
+    def _detect_horizontal_sections(
+        self,
+        words: List[WordMetadata],
+        page_width: float
+    ) -> Tuple[int, bool]:
+        """
+        Detect horizontal sections (full-width lines)
+        
+        Returns:
+            Tuple of (full_width_lines_count, has_horizontal_sections)
+        """
         lines = self._group_words_into_lines(words)
         full_width_lines = 0
+        
         for y_pos, line_words in lines:
             line_words.sort(key=lambda w: w.bbox[0])
             x_start = line_words[0].bbox[0]
             x_end = line_words[-1].bbox[2]
             width = x_end - x_start
+            
             if width > page_width * 0.75:  # Spans >75% of page
                 full_width_lines += 1
         
         has_horizontal_sections = full_width_lines >= 3  # At least 3 full-width lines
         
-        # Signal 3: Valley depth analysis
-        valley_depth_ratio = 1.0  # Default: no clear valley
-        if smoothed_histogram and len(peaks) >= 2:
-            max_val = max(smoothed_histogram.values())
-            
-            # Find deepest valley between peaks
-            valley_values = []
-            for i in range(len(peaks) - 1):
-                peak1 = peaks[i]
-                peak2 = peaks[i + 1]
-                
-                # Find minimum between peaks
-                min_val = float('inf')
-                for bin_idx in range(peak1, peak2 + 1):
-                    val = smoothed_histogram.get(bin_idx, 0)
-                    if val < min_val:
-                        min_val = val
-                
-                valley_values.append(min_val)
-            
-            if valley_values:
-                deepest_valley = min(valley_values)
-                valley_depth_ratio = deepest_valley / max_val if max_val > 0 else 1.0
-          
-        if self.verbose:
-            print(f"    Type 2/3 signals:")
-            print(f"      - Width ratio: {width_ratio:.2f} (balanced={is_balanced})")
-            print(f"      - Full-width lines: {full_width_lines} (has_horizontal={has_horizontal_sections})")
-            print(f"      - Valley ratio: {valley_depth_ratio:.2%}")
-            print(f"      - Detection method: {detection_method}")
-        
-        # Decision logic:
-        # Type 3 (hybrid/complex) if it has MIXED layout characteristics:
-        #   - Has horizontal sections (full-width) MIXED with vertical columns
-        #   - OR valley doesn't reach near 0 (indicates content crossing columns)
-        #
-        # Type 2 (clean multi-column) if:
-        #   - Clean vertical columns (valley reaches ~0)
-        #   - No significant horizontal sections
-        #   - Even if detected via Y-overlap (sidebar layouts are still Type 2)
-        
-        # Type 3 criteria: Has horizontal sections OR shallow valleys
-        is_type3 = has_horizontal_sections or valley_depth_ratio >= 0.20
-        
-        if is_type3:
-            return 3, "hybrid/complex", 0.80
-        else:
-            return 2, "multi-column", 0.85
+        return full_width_lines, has_horizontal_sections
     
     def _detect_columns_by_y_overlap(self, words: List[WordMetadata], page_width: float) -> Tuple[List[Tuple[float, float]], str]:
         """
@@ -342,10 +498,121 @@ class EnhancedLayoutDetector(BaseLayoutDetector):
             
             if not found_line:
                 lines[y_center] = [word]
-        
-        # Sort by Y position
+          # Sort by Y position
         return sorted(lines.items(), key=lambda x: x[0])
 
 
+# ============================================================
+# Visualization Utility
+# ============================================================
+
+def visualize_histogram(
+    layout_result: LayoutType,
+    words: List[WordMetadata],
+    save_path: Optional[str] = None,
+    show: bool = True
+):
+    """
+    Visualize X-density histogram for layout debugging
+    
+    Shows:
+    - Smoothed histogram
+    - Detected peaks (column centers)
+    - Valley depth
+    - Layout type classification
+    
+    Args:
+        layout_result: LayoutType result from detector
+        words: Original words
+        save_path: Optional path to save figure
+        show: Whether to display figure
+    """
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("Warning: matplotlib not installed. Install with: pip install matplotlib")
+        return
+    
+    histogram = layout_result.histogram
+    peaks = layout_result.peaks
+    
+    if not histogram:
+        print("No histogram data to visualize")
+        return
+    
+    # Compute smoothed histogram
+    from scipy.ndimage import gaussian_filter1d
+    
+    bins = sorted(histogram.keys())
+    values = [histogram[b] for b in bins]
+    
+    # Normalize
+    max_val = max(values) if values else 1
+    values_norm = [v / max_val for v in values]
+    
+    # Smooth
+    smoothed = gaussian_filter1d(values_norm, sigma=5)
+    
+    # Create figure
+    fig, ax = plt.subplots(figsize=(12, 6))
+    
+    # Plot histogram
+    ax.plot(bins, smoothed, linewidth=2, label='X-Density Histogram')
+    ax.fill_between(bins, 0, smoothed, alpha=0.3)
+    
+    # Mark peaks
+    for peak in peaks:
+        if peak in bins:
+            peak_idx = bins.index(peak)
+            ax.axvline(peak, color='green', linestyle='--', alpha=0.7, label=f'Peak at x={peak}')
+            ax.plot(peak, smoothed[peak_idx], 'go', markersize=10)
+    
+    # Mark valleys
+    if len(peaks) >= 2:
+        for i in range(len(peaks) - 1):
+            valley_start = peaks[i]
+            valley_end = peaks[i + 1]
+            
+            # Find minimum
+            min_val = 1.0
+            min_pos = valley_start
+            for j, b in enumerate(bins):
+                if valley_start <= b <= valley_end:
+                    if smoothed[j] < min_val:
+                        min_val = smoothed[j]
+                        min_pos = b
+            
+            ax.axvline(min_pos, color='red', linestyle=':', alpha=0.7, label=f'Valley (depth={min_val:.2f})')
+            ax.plot(min_pos, min_val, 'ro', markersize=8)
+    
+    # Labels
+    ax.set_xlabel('X Position (normalized)', fontsize=12)
+    ax.set_ylabel('Normalized Density', fontsize=12)
+    ax.set_title(
+        f'Layout Type: {layout_result.type_name} (Type {layout_result.type})\n'
+        f'Columns: {layout_result.num_columns}, Confidence: {layout_result.confidence:.1%}',
+        fontsize=14,
+        fontweight='bold'
+    )
+    ax.grid(True, alpha=0.3)
+    ax.set_ylim(0, 1.1)
+    
+    # Legend (remove duplicates)
+    handles, labels = ax.get_legend_handles_labels()
+    by_label = dict(zip(labels, handles))
+    ax.legend(by_label.values(), by_label.keys(), loc='upper right')
+    
+    plt.tight_layout()
+    
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"Saved histogram visualization to: {save_path}")
+    
+    if show:
+        plt.show()
+    else:
+        plt.close()
+
+
 # Make it easy to import
-__all__ = ['EnhancedLayoutDetector', 'LayoutType']
+__all__ = ['EnhancedLayoutDetector', 'LayoutType', 'visualize_histogram']
