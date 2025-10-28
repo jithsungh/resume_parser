@@ -38,7 +38,7 @@ class LayoutType:
 
 
 class LayoutDetector:
-    """Detects page layout using adaptive histogram analysis with gap detection"""
+    """Detects page layout using adaptive histogram analysis with gap detection"""    
     def __init__(
         self,
         bin_width: int = 5,
@@ -62,6 +62,10 @@ class LayoutDetector:
         self.min_column_width = min_column_width
         self.adaptive_threshold = adaptive_threshold
         self.verbose = verbose
+        # NEW: defaults used by older helpers if called
+        self.min_peak_height = 3
+        self.min_peak_distance = max(1, int(40 / max(1, self.bin_width)))
+        self.valley_threshold = 0.3
     
     def detect_layout(self, words: List[WordMetadata], page_width: float = None) -> LayoutType:
         """
