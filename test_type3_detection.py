@@ -63,6 +63,8 @@ def main():
     # Also test some Type 2 resumes for comparison
     type2_resumes = [
         "Resumes/Gnanasai_Dachiraju_Resume.pdf",
+        "Resumes/Gaganasri-M-FullStack_1.pdf",
+        "Resumes/Naukri_LovepreetBehal_11y_5m_.pdf"
     ]
     
     print("=" * 80)
