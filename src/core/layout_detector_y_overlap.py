@@ -138,8 +138,7 @@ class EnhancedLayoutDetector(BaseLayoutDetector):
 
     # =========================================
     # Classification Logic
-    # =========================================
-
+    # =========================================    
     def _classify_layout(
         self,
         num_columns: int,
@@ -154,22 +153,30 @@ class EnhancedLayoutDetector(BaseLayoutDetector):
         
         Type 1: Single column
         Type 2: Multi-column (clean separation)
-        Type 3: Hybrid/complex (mixed layout with headers)
+        Type 3: Hybrid/complex (mixed layout with headers and full-width sections)
         """
         # Type 1: single column
         if num_columns == 1:
             return 1, "single-column", 0.9
 
-        # Strong gutter logic
+        # Strong gutter logic (coverage >= 0.7 means clear column separation)
         if coverage >= 0.7:
-            if header_frac <= 0.05:
-                # Clean multi-column without significant header
-                return 2, "multi-column", 0.92
-            else:
-                # Multi-column with header section
+            # Type 3 indicators:
+            # 1. has_horizontal: presence of full-width lines (>= 3 lines)
+            # 2. header_frac > 0.05: significant header section at top
+            # 
+            # Type 3 resumes have full-width lines throughout (headers, section titles)
+            # Type 2 resumes are purely columnar with minimal full-width content
+            
+            if has_horizontal or header_frac > 0.05:
+                # Hybrid layout with full-width sections
                 return 3, "hybrid/complex", 0.92
+            else:
+                # Clean multi-column without significant full-width content
+                return 2, "multi-column", 0.92
 
         # Fallback: weighted scoring based on multiple signals
+        # Used when gutter is weak (coverage < 0.7)
         signals = {
             "valley_depth": min(valley_depth_ratio / self.config.valley_threshold, 1.0),
             "y_overlap": min(y_overlap_ratio * 5, 1.0),

@@ -62,22 +62,28 @@ def analyze_resume(file_path: str):
     print(f"\nColumn Boundaries:")
     for i, (left, right) in enumerate(layout.column_boundaries):
         print(f"  Column {i+1}: [{left:.1f}, {right:.1f}]")
-    
-    # Analyze why it was classified as it was
+      # Analyze why it was classified as it was
     print(f"\nClassification Logic:")
     coverage = gm.get('coverage', 0)
     header_frac = gm.get('header_frac', 0)
+    full_width_lines = layout.metadata.get('full_width_lines', 0)
+    has_horizontal = full_width_lines >= 3
     
     if layout.num_columns == 1:
         print("  → Single column detected")
     elif coverage >= 0.7:
         print(f"  → Strong gutter detected (coverage={coverage:.3f} >= 0.7)")
-        if header_frac <= 0.05:
-            print(f"    → No significant header (header_frac={header_frac:.3f} <= 0.05)")
-            print(f"    → Classified as Type 2 (multi-column)")
+        print(f"  → Full-width lines: {full_width_lines} (has_horizontal={has_horizontal})")
+        print(f"  → Header fraction: {header_frac:.3f}")
+        
+        if has_horizontal or header_frac > 0.05:
+            print(f"    → Type 3 condition met: has_horizontal={has_horizontal} OR header_frac={header_frac:.3f} > 0.05")
+            print(f"    → Should classify as Type 3 (hybrid/complex)")
         else:
-            print(f"    → Header detected (header_frac={header_frac:.3f} > 0.05)")
-            print(f"    → Classified as Type 3 (hybrid/complex)")
+            print(f"    → Type 2 condition met: has_horizontal={has_horizontal} AND header_frac={header_frac:.3f} <= 0.05")
+            print(f"    → Should classify as Type 2 (multi-column)")
+            
+        print(f"  → ACTUAL: Type {layout.type} ({layout.type_name})")
     else:
         print(f"  → Weak gutter (coverage={coverage:.3f} < 0.7)")
         print(f"  → Using fallback scoring...")
